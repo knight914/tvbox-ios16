@@ -44,6 +44,7 @@ final class AppAppearanceTests: XCTestCase {
         XCTAssertNil(storage.wrappedValue.colorScheme)
     }
 
+    @available(iOS 17.0, *)
     func testPaletteChangesWithAppearanceAndKeepsTextReadable() {
         for scheme in [ColorScheme.light, .dark] {
             var environment = EnvironmentValues()
@@ -62,6 +63,7 @@ final class AppAppearanceTests: XCTestCase {
         }
     }
 
+    @available(iOS 17.0, *)
     private func luminance(_ color: Color.Resolved) -> Double {
         func linear(_ component: Float) -> Double {
             let value = Double(component)
