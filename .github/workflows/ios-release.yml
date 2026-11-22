@@ -60,3 +60,6 @@ jobs:
             build/DerivedData/Packages/*.ipa
             build/DerivedData/*.log
           retention-days: 7
+      - name: Enforce XCTest result
+        if: always() && steps.xctest.outcome != 'success'
+        run: exit 1

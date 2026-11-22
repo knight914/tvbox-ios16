@@ -161,9 +161,9 @@ struct PlayerGestureLayer: View {
     // MARK: - Pinch Gesture
 
     private var pinchGesture: some Gesture {
-        MagnifyGesture()
+        MagnificationGesture()
             .onChanged { value in
-                let newScale = Self.clampZoom(scale: value.magnification * zoomScale)
+                let newScale = Self.clampZoom(scale: value * zoomScale)
                 onZoomChanged(newScale)
                 gestureMode = .none
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -171,7 +171,7 @@ struct PlayerGestureLayer: View {
                 }
             }
             .onEnded { value in
-                let finalScale = Self.clampZoom(scale: value.magnification * zoomScale)
+                let finalScale = Self.clampZoom(scale: value * zoomScale)
                 if finalScale < 1.0 {
                     zoomScale = 1.0
                 } else {
