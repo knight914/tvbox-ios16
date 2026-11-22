@@ -68,24 +68,60 @@ struct VodInfo: Codable, Identifiable {
         // playUrl  格式: "第1集$url1#第2集$url2$$$第1集$url3#第2集$url4"
         let flags = playFrom.components(separatedBy: "$$$").filter { !$0.isEmpty }
         let urls = playUrl.components(separatedBy: "$$$")
-        
-        info.playFlags = flags
+        var parsedRoutes: [(flag: String, episodes: [Episode], directScore: Int)] = []
         for (i, flag) in flags.enumerated() {
             if i < urls.count {
                 let episodes = urls[i].components(separatedBy: "#").compactMap { item -> Episode? in
-                    let parts = item.components(separatedBy: "$")
-                    guard parts.count >= 2 else { return nil }
-                    return Episode(name: parts[0], url: parts[1])
+                    guard let separator = item.firstIndex(of: "$") else { return nil }
+                    let name = String(item[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let url = String(item[item.index(after: separator)...])
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !name.isEmpty, !url.isEmpty else { return nil }
+                    return Episode(name: name, url: url)
                 }
-                info.playUrlMap[flag] = episodes
+                parsedRoutes.append((
+                    flag: flag,
+                    episodes: episodes,
+                    directScore: directPlaybackScore(flag: flag, episodes: episodes)
+                ))
             }
         }
-        
-        if let first = flags.first {
+
+        // 资源站常把需要网页解析的 share 线路放在第一条、直连 m3u8 放在第二条。
+        // macOS 端没有网页嗅探器；只要存在明确直连线路，就隐藏不可直接播放的线路。
+        let directRoutes = parsedRoutes.filter { $0.directScore > 0 && !$0.episodes.isEmpty }
+        let usableRoutes = directRoutes.isEmpty
+            ? parsedRoutes.filter { !$0.episodes.isEmpty }
+            : directRoutes.sorted { $0.directScore > $1.directScore }
+
+        info.playFlags = usableRoutes.map(\.flag)
+        for route in usableRoutes {
+            info.playUrlMap[route.flag] = route.episodes
+        }
+
+        if let first = info.playFlags.first {
             info.playFlag = first
         }
         
         return info
+    }
+
+    private static func directPlaybackScore(flag: String, episodes: [Episode]) -> Int {
+        let normalizedFlag = flag.lowercased()
+        var score = 0
+        if normalizedFlag.contains("m3u8") { score += 100 }
+        if normalizedFlag.contains("mp4") { score += 90 }
+        if normalizedFlag.contains("直连") || normalizedFlag.contains("direct") { score += 80 }
+
+        let directExtensions = ["m3u8", "mp4", "m4v", "mov", "mkv", "flv", "mpd"]
+        for episode in episodes.prefix(5) {
+            guard let components = URLComponents(string: episode.url),
+                  let scheme = components.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https" else { continue }
+            let pathExtension = (components.path as NSString).pathExtension.lowercased()
+            if directExtensions.contains(pathExtension) { score += 20 }
+        }
+        return score
     }
     
     /// 当前线路下的剧集。

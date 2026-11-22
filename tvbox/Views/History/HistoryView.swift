@@ -2,25 +2,21 @@ import SwiftUI
 
 /// 历史记录页 - 对应 Android 版 HistoryActivity
 struct HistoryView: View {
-    /// 历史数据源，直接观察本地缓存服务的数据变化。
-    @ObservedObject private var store = CacheStore.shared
-    
     /// 按最近播放时间倒序展示历史记录。
-    /// 只取「未被手动移除」的条目：历史页删除只影响这里，
-    /// 首页「继续观看」中的同一条目会保留，两边需各自手动删除。
-    private var records: [VodRecord] { store.historyRecords }
+    private var records: [VodRecord] { modelContext.records.sorted { $0.updateTime > $1.updateTime } }
+    /// SwiftData 上下文，用于删除单条记录或清空历史。
+    @ObservedObject private var modelContext = JSONStore.shared
     
     #if os(iOS)
-    /// iOS 网格配置。
-    private let columns = [
-        GridItem(.adaptive(minimum: 120, maximum: 160), spacing: 12)
-    ]
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    private var gridMetrics: PosterGridMetrics {
+        PosterGridMetrics(isRegularWidth: horizontalSizeClass == .regular)
+    }
     #else
-    /// macOS 网格配置。
-    private let columns = [
-        GridItem(.adaptive(minimum: 140, maximum: 180), spacing: 16)
-    ]
+    private let gridMetrics = PosterGridMetrics()
     #endif
+
+    private var columns: [GridItem] { gridMetrics.columns }
     
     var body: some View {
         historyContent
@@ -35,7 +31,7 @@ struct HistoryView: View {
                 emptyState
             } else {
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 16) {
+                    LazyVGrid(columns: columns, spacing: gridMetrics.spacing) {
                         // 记录卡片支持跳转详情与右键删除。
                         ForEach(records) { item in
                             NavigationLink(destination: DetailView(video: movieVideo(from: item))) {
@@ -44,9 +40,14 @@ struct HistoryView: View {
                             .buttonStyle(.plain)
                             .contextMenu {
                                 Button(role: .destructive) {
-                                    store.hideFromHistory(item)
+                                    modelContext.delete(item)
+                                    do {
+                                        try modelContext.save()
+                                    } catch {
+                                        print("删除历史记录失败: \(error)")
+                                    }
                                 } label: {
-                                    Label("从历史记录中移除", systemImage: "trash")
+                                    Label("删除记录", systemImage: "trash")
                                 }
                             }
                         }
@@ -56,7 +57,7 @@ struct HistoryView: View {
                 }
             }
         }
-        .background(Color(red: 0.08, green: 0.08, blue: 0.1))
+        .background(AppTheme.background)
         .navigationTitle("历史记录")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -66,7 +67,9 @@ struct HistoryView: View {
                 ToolbarItem(placement: .automatic) {
                     // 清空历史使用统一缓存服务，确保行为与其他入口一致。
                     Button {
-                        store.clearHistory()
+                        Task {
+                            CacheStore.shared.clearHistory(context: modelContext)
+                        }
                     } label: {
                         Text("清空")
                             .foregroundColor(.orange)
@@ -115,7 +118,7 @@ struct HistoryView: View {
             
             Text(item.vodName)
                 .font(.caption)
-                .foregroundColor(.white)
+                .foregroundColor(.primary)
                 .lineLimit(2)
             
             Text(item.updateTime.displayString)

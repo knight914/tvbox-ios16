@@ -8,6 +8,7 @@ struct EpisodeListView: View {
     let selectedIndex: Int
     /// 点击某一集后的回调（返回绝对索引）。
     let onSelect: (Int) -> Void
+    var horizontalPadding: CGFloat = 20
     
     /// 当前分组索引（每 50 集一个分组，避免超长列表影响渲染与选择体验）。
     @State private var currentGroup = 0
@@ -45,15 +46,15 @@ struct EpisodeListView: View {
                             } label: {
                                 Text("\(start)-\(end)")
                                     .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(currentGroup == group ? .white : .white.opacity(0.5))
+                                    .foregroundColor(currentGroup == group ? .primary : .secondary)
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
                                     .background(
                                         ZStack {
                                             if currentGroup == group {
-                                                Capsule().fill(Color.white.opacity(0.15))
+                                                Capsule().fill(Color.primary.opacity(0.15))
                                             } else {
-                                                Capsule().fill(Color.white.opacity(0.05))
+                                                Capsule().fill(Color.primary.opacity(0.05))
                                             }
                                         }
                                     )
@@ -61,7 +62,7 @@ struct EpisodeListView: View {
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, horizontalPadding)
                 }
             }
             
@@ -75,7 +76,7 @@ struct EpisodeListView: View {
                     } label: {
                         Text(episode.name)
                             .font(.system(size: 13, weight: actualIndex == selectedIndex ? .bold : .medium))
-                            .foregroundColor(actualIndex == selectedIndex ? .white : .white.opacity(0.7))
+                            .foregroundColor(actualIndex == selectedIndex ? .white : .secondary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.85)
                             .frame(maxWidth: .infinity)
@@ -85,20 +86,29 @@ struct EpisodeListView: View {
                                     if actualIndex == selectedIndex {
                                         AppTheme.accentGradient
                                     } else {
-                                        Color.white.opacity(0.05)
+                                        Color.primary.opacity(0.05)
                                     }
                                 }
                             )
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 10)
-                                    .stroke(actualIndex == selectedIndex ? Color.clear : Color.white.opacity(0.1), lineWidth: 0.5)
+                                    .stroke(actualIndex == selectedIndex ? Color.clear : Color.primary.opacity(0.1), lineWidth: 0.5)
                             )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("播放\(episode.name)")
+                    .accessibilityAddTraits(actualIndex == selectedIndex ? [.isSelected] : [])
                 }
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, horizontalPadding)
         }
+        .onAppear { syncSelectedGroup() }
+        .onCompatibleChange(of: selectedIndex) { _, _ in syncSelectedGroup() }
+        .onCompatibleChange(of: episodes) { _, _ in syncSelectedGroup() }
+    }
+
+    private func syncSelectedGroup() {
+        currentGroup = min(max(selectedIndex, 0) / groupSize, groupCount - 1)
     }
 }

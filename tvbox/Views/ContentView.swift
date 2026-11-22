@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// 根视图 - 对应 Android 版 HomeActivity 的 TabView 导航
 struct ContentView: View {
@@ -16,19 +19,15 @@ struct ContentView: View {
     @StateObject private var settingsVM = SettingsViewModel()
     /// 当前主标签索引。
     @State private var selectedTab = 0
-    /// 预留：控制首次配置页显隐（当前逻辑由 `appState.isConfigLoaded` 驱动）。
+    /// 已配置用户主动修改接口时显示输入页。
     @State private var showSetup = false
     /// 首次配置页历史回填目标输入框。
     @State private var setupInputTarget: ApiInputTarget = .vod
-    /// 启动阶段：有已保存配置时显示启动加载页（成功进主页，失败展示重试）。
-    @State private var isBooting = false
-
+    
     var body: some View {
         Group {
-            if appState.isConfigLoaded {
+            if appState.shouldShowMainInterface && !showSetup {
                 mainTabView
-            } else if isBooting {
-                bootSplashView
             } else {
                 setupView
             }
@@ -37,94 +36,8 @@ struct ContentView: View {
         .overlay(alignment: .top) {
             networkStatusBanner
         }
-        .preferredColorScheme(.dark)
-        .onAppear {
-            // 自动加载已保存的配置
-            let defaults = UserDefaults.standard
-            let savedVodUrl = defaults.string(forKey: HawkConfig.API_URL) ?? ""
-            let savedLiveUrl = defaults.string(forKey: HawkConfig.LIVE_API_URL) ?? ""
-            guard !savedVodUrl.isEmpty else { return }
-            startBoot(vodUrl: savedVodUrl, liveUrl: savedLiveUrl)
-        }
-    }
-
-    // MARK: - 启动加载页
-
-    /// 冷启动直达主页：加载成功自动进入；失败在启动页给出错误与重试入口，
-    /// 不再让用户误以为"每次打开都要重新配置"。
-    private var bootSplashView: some View {
-        ZStack {
-            AppTheme.primaryGradient
-                .ignoresSafeArea()
-
-            VStack(spacing: 24) {
-                Image(systemName: "play.tv.fill")
-                    .font(.system(size: 72))
-                    .foregroundStyle(AppTheme.accentGradient)
-                    .shadow(color: .red.opacity(0.3), radius: 15, x: 0, y: 10)
-
-                Text("TVBox")
-                    .font(.system(size: 40, weight: .heavy, design: .rounded))
-                    .foregroundColor(.white)
-                    .tracking(2)
-
-                if let error = appState.configLoadError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundColor(.white.opacity(0.7))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 44)
-
-                    Button {
-                        let defaults = UserDefaults.standard
-                        startBoot(
-                            vodUrl: defaults.string(forKey: HawkConfig.API_URL) ?? "",
-                            liveUrl: defaults.string(forKey: HawkConfig.LIVE_API_URL) ?? ""
-                        )
-                    } label: {
-                        Text("重新加载")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 13)
-                            .background(AppTheme.accentGradient)
-                            .clipShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 60)
-
-                    Button {
-                        // 放弃自动恢复，回到首次配置页手动处理
-                        isBooting = false
-                    } label: {
-                        Text("重新配置接口")
-                            .font(.system(size: 13))
-                            .foregroundColor(.white.opacity(0.6))
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    ProgressView()
-                        .tint(.white)
-                        .scaleEffect(1.2)
-                    Text("正在加载配置...")
-                        .font(.subheadline)
-                        .foregroundColor(.white.opacity(0.6))
-                }
-            }
-        }
-    }
-
-    private func startBoot(vodUrl: String, liveUrl: String) {
-        isBooting = true
-        appState.configLoadError = nil
-        Task {
-            await appState.loadConfig(vodUrl: vodUrl, liveUrl: liveUrl)
-            if !appState.isConfigLoaded {
-                // 保留启动页展示错误与重试按钮，由用户决定重试或重新配置
-                isBooting = true
-            } else {
-                isBooting = false
-            }
+        .task {
+            await appState.restoreSavedConfigurationIfNeeded()
         }
     }
     
@@ -143,6 +56,7 @@ struct ContentView: View {
                         await settingsVM.selectPendingMultiRepoOption(option)
                         if settingsVM.configSuccess {
                             appState.applyLoadedConfigState()
+                            showSetup = false
                         }
                     }
                 },
@@ -159,40 +73,35 @@ struct ContentView: View {
     private var mainTabView: some View {
         #if os(iOS)
         TabView(selection: $selectedTab) {
-            HomeView()
+            configurationContent { HomeView() }
                 .tabItem {
                     Label("首页", systemImage: "house.fill")
                 }
                 .tag(0)
-
-            SourceBrowseView()
-                .tabItem {
-                    Label("资源", systemImage: "square.grid.2x2.fill")
-                }
-                .tag(1)
-
-            LiveView(onExit: {
-                selectedTab = 0
-            })
+            
+            configurationContent {
+                LiveView(onExit: { selectedTab = 0 })
+            }
                 .tabItem {
                     Label("直播", systemImage: "tv.fill")
                 }
-                .tag(2)
-
-            SearchView()
+                .tag(1)
+            
+            configurationContent { SearchView() }
                 .tabItem {
                     Label("搜索", systemImage: "magnifyingglass")
                 }
-                .tag(3)
-
+                .tag(2)
+            
             ProfileView()
                 .tabItem {
                     Label("个人中心", systemImage: "person.fill")
                 }
-                .tag(4)
+                .tag(3)
         }
         .tint(.orange)
-        .onChange(of: selectedTab) { _ in
+        .modifier(MobileTabNavigationModifier())
+        .onCompatibleChange(of: selectedTab) { _, _ in
             HapticManager.shared.selection()
         }
         #else
@@ -200,45 +109,60 @@ struct ContentView: View {
             List(selection: $selectedTab) {
                 Label("首页", systemImage: "house.fill")
                     .tag(0)
-                Label("资源", systemImage: "square.grid.2x2.fill")
-                    .tag(1)
                 Label("直播", systemImage: "tv.fill")
-                    .tag(2)
+                    .tag(1)
                 Label("搜索", systemImage: "magnifyingglass")
-                    .tag(3)
+                    .tag(2)
                 Label("收藏", systemImage: "heart.fill")
-                    .tag(4)
+                    .tag(3)
                 Label("历史", systemImage: "clock.fill")
+                    .tag(5)
+                Label("下载", systemImage: "arrow.down.circle.fill")
                     .tag(6)
                 Label("设置", systemImage: "gearshape.fill")
-                    .tag(5)
+                    .tag(4)
             }
             .navigationTitle("TVBox")
             .listStyle(.sidebar)
         } detail: {
             switch selectedTab {
-            case 0: HomeView()
-            case 1:
-                NavigationStack {
-                    SourceBrowseView()
-                }
-            case 2: LiveView()
-            case 3: SearchView()
-            case 4:
+            case 0: configurationContent { HomeView() }
+            case 1: configurationContent { LiveView() }
+            case 2: configurationContent { SearchView() }
+            case 3:
                 NavigationStack {
                     FavoritesView()
                 }
-            case 5: SettingsView()
-            case 6:
+            case 4: SettingsView()
+            case 5:
                 NavigationStack {
                     HistoryView()
                 }
-            default: HomeView()
+            case 6:
+                NavigationStack {
+                    DownloadsView(manager: .shared)
+                }
+            default: configurationContent { HomeView() }
             }
         }
+        .modifier(HomeWindowTitleModifier(isHidden: selectedTab == 0))
         #endif
     }
     
+    /// 已保存接口的用户先进入主界面，等配置恢复成功再创建依赖来源的页面。
+    @ViewBuilder
+    private func configurationContent<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        if appState.isConfigLoaded {
+            content()
+        } else {
+            ConfigRestoreView(error: appState.configLoadError, isLoading: appState.isLoadingConfig) {
+                Task { await appState.retryConfig() }
+            } edit: {
+                showSetup = true
+            }
+        }
+    }
+
     // MARK: - 首次配置页面
     
     /// 首次启动或未加载配置时的引导页面。
@@ -272,6 +196,11 @@ struct ContentView: View {
             
             ScrollView {
                 VStack(spacing: 32) {
+                    if appState.shouldShowMainInterface {
+                        Button("返回首页") { showSetup = false }
+                            .buttonStyle(.plain).foregroundStyle(.orange)
+                            .padding(.top, 20)
+                    }
                     // Logo 区域
                     VStack(spacing: 20) {
                         ZStack {
@@ -292,12 +221,12 @@ struct ContentView: View {
                         VStack(spacing: 8) {
                             Text("TVBox")
                                 .font(.system(size: 48, weight: .heavy, design: .rounded))
-                                .foregroundColor(.white)
+                                .foregroundColor(.primary)
                                 .tracking(2)
                             
                             Text("极致视听 · 简洁至上")
                                 .font(.subheadline)
-                                .foregroundColor(.white.opacity(0.6))
+                                .foregroundColor(.secondary)
                                 .tracking(4)
                         }
                     }
@@ -308,7 +237,7 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("接口配置")
                                 .font(.headline)
-                                .foregroundColor(.white)
+                                .foregroundColor(.primary)
                                 .padding(.leading, 4)
                             
                             HStack {
@@ -316,7 +245,7 @@ struct ContentView: View {
                                     .foregroundColor(.orange)
                                 TextField("请输入点播接口地址 (URL)", text: $settingsVM.vodApiUrl)
                                     .textFieldStyle(.plain)
-                                    .foregroundColor(.white)
+                                    .foregroundColor(.primary)
                                     .onTapGesture {
                                         setupInputTarget = .vod
                                     }
@@ -343,7 +272,7 @@ struct ContentView: View {
                                     .foregroundColor(.orange)
                                 TextField("请输入直播接口地址 (URL，可留空跟随点播)", text: $settingsVM.liveApiUrl)
                                     .textFieldStyle(.plain)
-                                    .foregroundColor(.white)
+                                    .foregroundColor(.primary)
                                     .onTapGesture {
                                         setupInputTarget = .live
                                     }
@@ -372,6 +301,7 @@ struct ContentView: View {
                                 await settingsVM.loadConfig()
                                 if settingsVM.configSuccess {
                                     appState.applyLoadedConfigState()
+                                    showSetup = false
                                 }
                             }
                         } label: {
@@ -402,7 +332,7 @@ struct ContentView: View {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("最近使用")
                                     .font(.caption)
-                                    .foregroundColor(.white.opacity(0.5))
+                                    .foregroundColor(.secondary)
                                     .padding(.horizontal, 4)
                                 
                                 ForEach(settingsVM.apiHistory.prefix(3), id: \.self) { url in
@@ -417,7 +347,7 @@ struct ContentView: View {
                                         HStack {
                                             Image(systemName: "clock.arrow.2.circlepath")
                                                 .font(.caption)
-                                            Text(url)
+                                            Text(SensitiveURLRedactor.redact(url))
                                                 .font(.caption)
                                                 .lineLimit(1)
                                             Spacer()
@@ -426,7 +356,7 @@ struct ContentView: View {
                                         }
                                         .padding(.vertical, 10)
                                         .padding(.horizontal, 16)
-                                        .foregroundColor(.white.opacity(0.7))
+                                        .foregroundColor(.secondary)
                                         .glassCard(cornerRadius: 10)
                                     }
                                     .buttonStyle(.plain)
@@ -491,5 +421,93 @@ struct ContentView: View {
         // macOS 下通过 NSPasteboard 读取纯文本。
         NSPasteboard.general.string(forType: .string)
         #endif
+    }
+}
+
+#if os(iOS)
+/// 系统在 iPad 上提供可切换侧栏，窄窗口和 iPhone 保留标签导航。
+private struct MobileTabNavigationModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.tabViewStyle(.sidebarAdaptable)
+        } else {
+            content
+        }
+    }
+}
+#endif
+
+#if os(macOS)
+/// 首页保留侧栏和窗口控件，只隐藏系统自动生成的标题。
+private struct HomeWindowTitleModifier: ViewModifier {
+    let isHidden: Bool
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.toolbar(removing: isHidden ? .title : nil)
+        } else {
+            content.background(LegacyWindowTitleVisibility(isHidden: isHidden))
+        }
+    }
+}
+
+/// macOS 14 尚未提供默认工具栏标题项的 SwiftUI 开关。
+private struct LegacyWindowTitleVisibility: NSViewRepresentable {
+    let isHidden: Bool
+
+    func makeNSView(context: Context) -> TitleView { TitleView() }
+
+    func updateNSView(_ view: TitleView, context: Context) {
+        view.isTitleHidden = isHidden
+        view.applyVisibility()
+    }
+
+    static func dismantleNSView(_ view: TitleView, coordinator: ()) {
+        view.window?.titleVisibility = .visible
+    }
+
+    final class TitleView: NSView {
+        var isTitleHidden = false
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            applyVisibility()
+        }
+
+        func applyVisibility() {
+            window?.titleVisibility = isTitleHidden ? .hidden : .visible
+        }
+    }
+}
+#endif
+
+
+/// 配置恢复状态显示在首页内部，不再短暂展示首次使用表单。
+struct ConfigRestoreView: View {
+    let error: String?
+    let isLoading: Bool
+    let retry: () -> Void
+    let edit: () -> Void
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Image(systemName: error == nil ? "play.tv.fill" : "wifi.exclamationmark")
+                .font(.system(size: 42)).foregroundStyle(.orange)
+            if let error, !isLoading {
+                Text("暂时无法加载已保存的接口").font(.headline)
+                Text(error).font(.callout).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).textSelection(.enabled)
+                HStack(spacing: 16) {
+                    Button("重试", action: retry).buttonStyle(.borderedProminent).tint(.orange)
+                    Button("修改接口", action: edit).buttonStyle(.bordered)
+                }
+            } else {
+                ProgressView("正在加载首页…")
+                Text("正在恢复已保存的接口").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(AppTheme.primaryGradient)
     }
 }

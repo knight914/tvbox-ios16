@@ -135,11 +135,18 @@ class ApiConfig: ObservableObject {
         
         let visitKey = normalizedUrl.lowercased()
         guard !visitedUrls.contains(visitKey) else {
-            throw ConfigError.parseError("检测到循环引用的配置地址: \(normalizedUrl)")
+            throw ConfigError.parseError(
+                "检测到循环引用的配置地址: \(SensitiveURLRedactor.redact(normalizedUrl))"
+            )
         }
         
         var nextVisited = visitedUrls
         nextVisited.insert(visitKey)
+
+        if SpiderGatewayService.isCatVodBundleURL(normalizedUrl) {
+            let config = try await SpiderGatewayService.shared.catalog(bundleURL: normalizedUrl)
+            return (config, normalizedUrl)
+        }
         
         let jsonStr = try await fetchConfigText(from: normalizedUrl)
         
@@ -521,6 +528,9 @@ class ApiConfig: ObservableObject {
     /// 返回 nil 表示不是多仓库入口；返回数组表示是多仓库入口（数组可能为空）。
     func fetchMultiRepoOptions(from apiUrl: String) async throws -> [MultiRepoOption]? {
         let normalizedUrl = Self.normalizeConfigUrl(apiUrl)
+        // A script is executed by the local engine, never parsed as a JSON
+        // repository index. Avoid downloading it twice during initial setup.
+        if SpiderGatewayService.isCatVodBundleURL(normalizedUrl) { return nil }
         let jsonStr = try await fetchConfigText(from: normalizedUrl)
         let cleanedJson = Self.stripJsonComments(jsonStr)
         
@@ -589,20 +599,33 @@ class ApiConfig: ObservableObject {
                         quickSearch: site.quickSearch?.value ?? 0,
                         playerType: site.playerType?.value ?? 0,
                         type: site.type?.value ?? 1,
-                        ext: site.ext?.stringValue
-                    )
+                        ext: site.ext?.stringValue,
+                        jar: Self.resolvedSpiderJar(siteJar: site.jar, defaultJar: config.spider)
+                    ).applyingNodeCompatibility(baseConfigURL: apiUrl)
                     sources.append(bean)
                 }
             }
+#if os(macOS)
+            if !sources.contains(where: { $0.key == SourceBean.cloudPanKey }) {
+                sources.append(.cloudPan)
+            }
+            if !sources.contains(where: {
+                $0.key == SourceBean.kkPanSearchKey
+                    || ($0.api == SourceBean.panSearchAPI
+                        && $0.ext?.contains(#""engine":"kkpans""#) == true)
+            }) {
+                sources.append(.kkPanSearch)
+            }
+#endif
             self.sourceBeanList = sources
             
             // 设置默认主页源：优先选择 Swift 支持的源
             if let saved = UserDefaults.standard.string(forKey: HawkConfig.HOME_API),
-               let found = sources.first(where: { $0.key == saved }) {
+               let found = sources.first(where: { $0.key == saved && $0.isHomeEligible }) {
                 self.homeSourceBean = found
             } else {
-                // 优先选择支持的源（type 0/1/4），跳过 type=3 (JAR)
-                self.homeSourceBean = sources.first(where: { $0.isSupportedInSwift }) ?? sources.first
+                // type=3 仅在配置了 Spider Gateway 时可作为主页源。
+                self.homeSourceBean = sources.first(where: { $0.isHomeEligible }) ?? sources.first
             }
             
             // 解析解析器列表
@@ -637,6 +660,14 @@ class ApiConfig: ObservableObject {
                 liveChannelGroupList = []
             }
         }
+    }
+
+    /// 站点 JAR 优先；空值回退到配置顶层 spider。
+    static func resolvedSpiderJar(siteJar: String?, defaultJar: String?) -> String? {
+        let siteValue = siteJar?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !siteValue.isEmpty { return siteValue }
+        let defaultValue = defaultJar?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return defaultValue.isEmpty ? nil : defaultValue
     }
     
     /// 解析直播列表
@@ -675,7 +706,9 @@ class ApiConfig: ObservableObject {
                             let content = try await NetworkManager.shared.getString(from: target.url)
                             return (target.order, content)
                         } catch {
-                            print("加载直播源失败: \(target.url), error: \(error)")
+                            #if DEBUG
+                            print("加载直播源失败（序号 \(target.order)）")
+                            #endif
                             return (target.order, nil)
                         }
                     }
@@ -929,6 +962,7 @@ class ApiConfig: ObservableObject {
     
     /// 设置主页源
     func setHomeSource(_ source: SourceBean) {
+        guard source.isHomeEligible else { return }
         self.homeSourceBean = source
         UserDefaults.standard.set(source.key, forKey: HawkConfig.HOME_API)
     }

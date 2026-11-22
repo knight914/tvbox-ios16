@@ -29,6 +29,7 @@ class DetailViewModel: ObservableObject {
     @Published var isLoading = false
     /// 错误提示。
     @Published var errorMessage: String?
+    @Published var playbackNotice: SpiderPlaybackNotice?
     /// 当前选中线路。
     @Published var selectedFlag: String = ""
     /// 当前选中剧集索引。
@@ -37,6 +38,9 @@ class DetailViewModel: ObservableObject {
     @Published var isPlaying = false
     /// 当前实际播放地址（可能是原始地址，也可能是清晰度切换后的子流地址）。
     @Published var playUrl: String?
+    /// Spider playerContent 返回的播放请求头，供播放器适配层使用。
+    @Published var playbackHeaders: [String: String] = [:]
+    @Published var sourceSubtitles: [SourceSubtitle] = []
     /// 续播起始位置（秒）。
     @Published var resumeSeconds: Double = 0
     /// 当前可选清晰度列表。
@@ -45,6 +49,9 @@ class DetailViewModel: ObservableObject {
     @Published var selectedQualityId: String = PlaybackQualityOption.autoIdentifier
     /// 播放器高频回调进度，不直接绑定 UI，避免高频刷新引发性能问题。
     private var realtimeProgressSeconds: Double = 0
+    private var verificationContext: SourceVerificationStore.Context?
+    private var playbackEvidence = PlaybackProgressEvidence()
+
     
     /// 数据服务与网络服务。
     private let sourceService = SourceService.shared
@@ -55,19 +62,41 @@ class DetailViewModel: ObservableObject {
     private var qualityOptionCache: [String: [PlaybackQualityOption]] = [:]
     /// 清晰度解析任务，用于取消旧请求。
     private var qualityResolveTask: Task<Void, Never>?
+    /// Spider 播放地址解析任务。
+    private var playbackResolveTask: Task<Void, Never>?
+    private var playbackResolveToken = UUID()
     /// 解析令牌，防止异步结果回写到过期状态。
     private var qualityResolveToken = UUID()
     
     /// 加载视频详情
-    func loadDetail(video: Movie.Video) async {
-        guard let source = ApiConfig.shared.getSource(key: video.sourceKey)
-                ?? ApiConfig.shared.homeSourceBean else { return }
-        
+    func loadDetail(video: Movie.Video, initialInfo: VodInfo? = nil) async {
+        verificationContext = nil
+        playbackEvidence = PlaybackProgressEvidence()
+        let config = ApiConfig.shared
+        if config.isLoaded, !config.configUrl.isEmpty, let source = config.getSource(key: video.sourceKey) {
+            let store = SourceVerificationStore.shared
+            store.register(configURL: config.configUrl, sources: config.sourceBeanList)
+            verificationContext = store.context(configURL: config.configUrl, source: source)
+        }
         isLoading = true
         errorMessage = nil
+        playbackNotice = nil
+        vodInfo = nil
+        defer { isLoading = false }
         
         do {
-            if let info = try await sourceService.getDetail(sourceBean: source, vodId: video.id) {
+            let detail: VodInfo?
+            if let initialInfo {
+                detail = initialInfo
+            } else {
+                guard let source = ApiConfig.shared.getSource(key: video.sourceKey) else {
+                    errorMessage = "该来源已移除，请重新搜索并选择其他资源"
+                    return
+                }
+                detail = try await sourceService.getDetail(sourceBean: source, vodId: video.id)
+            }
+            guard !Task.isCancelled else { return }
+            if let info = detail {
                 self.vodInfo = info
                 self.selectedFlag = info.playFlag
                 self.selectedEpisodeIndex = info.playIndex
@@ -77,13 +106,15 @@ class DetailViewModel: ObservableObject {
                     updateQualityOptions(for: episode.url, resetSelection: true)
                 } else {
                     resetQualityState()
+                    errorMessage = "该资源未返回剧集，请返回资源列表重试或选择其他来源"
                 }
+            } else {
+                errorMessage = "未找到资源详情，请返回资源列表选择其他来源"
             }
         } catch {
             errorMessage = error.localizedDescription
         }
         
-        isLoading = false
     }
     
     /// 选择线路
@@ -112,7 +143,7 @@ class DetailViewModel: ObservableObject {
         
         // 播放中切线路时，立即切换到新线路对应剧集
         if isPlaying {
-            playUrl = selectedPlayableURL(fallback: episodeURL)
+            beginPlayback(episodeID: episodeURL, flag: flag)
         }
     }
     
@@ -128,8 +159,8 @@ class DetailViewModel: ObservableObject {
             // 仅当剧集 URL 变化时重置清晰度选择。
             let shouldResetQuality = qualityBaseEpisodeURL != episode.url
             updateQualityOptions(for: episode.url, resetSelection: shouldResetQuality)
-            playUrl = selectedPlayableURL(fallback: episode.url)
             isPlaying = true
+            beginPlayback(episodeID: episode.url, flag: selectedFlag)
         }
     }
     
@@ -155,8 +186,8 @@ class DetailViewModel: ObservableObject {
         realtimeProgressSeconds = progress
         let episodeURL = episodes[targetIndex].url
         updateQualityOptions(for: episodeURL, resetSelection: true)
-        playUrl = selectedPlayableURL(fallback: episodeURL)
         isPlaying = true
+        beginPlayback(episodeID: episodeURL, flag: targetFlag)
     }
     
     /// 选择清晰度
@@ -176,6 +207,14 @@ class DetailViewModel: ObservableObject {
     }
     
     /// 播放器时间回调
+    func observePlaybackEvidence(seconds: Double, playing: Bool) {
+        guard let context = verificationContext, let url = playUrl, !url.isEmpty else { return }
+        let identity = "\(selectedFlag)|\(selectedEpisodeIndex)|\(url)"
+        if playbackEvidence.observe(playbackID: identity, seconds: seconds, playing: playing) {
+            SourceVerificationStore.shared.recordPlayback(context: context)
+        }
+    }
+
     func updatePlaybackProgress(seconds: Double) {
         guard seconds.isFinite else { return }
         realtimeProgressSeconds = max(seconds, 0)
@@ -236,6 +275,77 @@ class DetailViewModel: ObservableObject {
             return selected
         }
         return fallback
+    }
+
+    /// 把 Spider 的剧集 id 解析为真实媒体地址；普通源保持原有直连行为。
+    private func beginPlayback(episodeID: String, flag: String) {
+        playbackResolveTask?.cancel()
+        let token = UUID()
+        playbackResolveToken = token
+        sourceSubtitles = []
+        errorMessage = nil
+        playbackNotice = nil
+
+        guard let sourceKey = vodInfo?.sourceKey,
+              let source = ApiConfig.shared.getSource(key: sourceKey) else {
+            playbackHeaders = [:]
+            playUrl = selectedPlayableURL(fallback: episodeID)
+            return
+        }
+
+        if source.type != 3 {
+            playbackHeaders = [:]
+            playUrl = selectedPlayableURL(fallback: episodeID)
+            return
+        }
+
+        playUrl = nil
+        playbackResolveTask = Task { [source, episodeID, flag] in
+            do {
+                let result = try await sourceService.resolvePlayback(
+                    sourceBean: source,
+                    flag: flag,
+                    episodeID: episodeID
+                )
+                guard !Task.isCancelled, playbackResolveToken == token else { return }
+                playbackHeaders = result.headers
+                sourceSubtitles = result.subtitles
+                playbackNotice = result.notice
+                if result.qualityOptions.count > 1 {
+                    applySpiderQualityOptions(result.qualityOptions, automaticURL: result.url)
+                } else {
+                    updateQualityOptions(for: result.url, resetSelection: true)
+                }
+                playUrl = result.url
+            } catch {
+                guard !Task.isCancelled, playbackResolveToken == token else { return }
+                playbackHeaders = [:]
+                playUrl = nil
+                isPlaying = false
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func applySpiderQualityOptions(
+        _ options: [SpiderPlaybackQualityOption],
+        automaticURL: String
+    ) {
+        qualityResolveTask?.cancel()
+        qualityResolveTask = nil
+        qualityResolveToken = UUID()
+        qualityBaseEpisodeURL = automaticURL
+        selectedQualityId = PlaybackQualityOption.autoIdentifier
+
+        var merged = [PlaybackQualityOption.auto(url: automaticURL)]
+        merged.append(contentsOf: options.enumerated().map { index, option in
+            PlaybackQualityOption(
+                id: "spider-quality-\(index)-\(option.url)",
+                name: option.name,
+                url: option.url
+            )
+        })
+        qualityOptions = merged
     }
     
     /// 重置清晰度解析与选择状态。

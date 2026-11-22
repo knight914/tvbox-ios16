@@ -2,23 +2,21 @@ import SwiftUI
 
 /// 收藏页 - 对应 Android 版 CollectActivity
 struct FavoritesView: View {
-    /// 收藏数据源，直接观察本地缓存服务的数据变化。
-    @ObservedObject private var store = CacheStore.shared
-    
     /// 按更新时间倒序展示收藏，最近收藏/更新的内容靠前。
-    private var favorites: [VodCollect] { store.collects }
+    private var favorites: [VodCollect] { modelContext.collects.sorted { $0.updateTime > $1.updateTime } }
+    /// SwiftData 上下文，用于删除收藏并持久化。
+    @ObservedObject private var modelContext = JSONStore.shared
     
     #if os(iOS)
-    /// iOS 下卡片尺寸更紧凑，适配手机竖屏。
-    private let columns = [
-        GridItem(.adaptive(minimum: 120, maximum: 160), spacing: 12)
-    ]
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    private var gridMetrics: PosterGridMetrics {
+        PosterGridMetrics(isRegularWidth: horizontalSizeClass == .regular)
+    }
     #else
-    /// macOS 下卡片适度放大，提升桌面端可读性。
-    private let columns = [
-        GridItem(.adaptive(minimum: 140, maximum: 180), spacing: 16)
-    ]
+    private let gridMetrics = PosterGridMetrics()
     #endif
+
+    private var columns: [GridItem] { gridMetrics.columns }
     
     var body: some View {
         favoritesContent
@@ -33,7 +31,7 @@ struct FavoritesView: View {
                 emptyState
             } else {
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 16) {
+                    LazyVGrid(columns: columns, spacing: gridMetrics.spacing) {
                         // 每个收藏项都可直接跳转详情，并支持右键取消收藏。
                         ForEach(favorites) { item in
                             NavigationLink(destination: DetailView(video: movieVideo(from: item))) {
@@ -42,7 +40,12 @@ struct FavoritesView: View {
                             .buttonStyle(.plain)
                             .contextMenu {
                                 Button(role: .destructive) {
-                                    store.removeCollect(item)
+                                    modelContext.delete(item)
+                                    do {
+                                        try modelContext.save()
+                                    } catch {
+                                        print("删除收藏失败: \(error)")
+                                    }
                                 } label: {
                                     Label("取消收藏", systemImage: "heart.slash")
                                 }
@@ -54,7 +57,7 @@ struct FavoritesView: View {
                 }
             }
         }
-        .background(Color(red: 0.08, green: 0.08, blue: 0.1))
+        .background(AppTheme.background)
         .navigationTitle("收藏")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -86,7 +89,7 @@ struct FavoritesView: View {
             
             Text(item.vodName)
                 .font(.caption)
-                .foregroundColor(.white)
+                .foregroundColor(.primary)
                 .lineLimit(2)
         }
     }

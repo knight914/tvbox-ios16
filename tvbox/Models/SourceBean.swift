@@ -23,10 +23,13 @@ struct SourceBean: Codable, Identifiable, Hashable {
     let type: Int
     /// 扩展参数（remote 源常用）。
     let ext: String?
+    /// type=3 Spider 使用的 JAR 地址（已应用顶层 spider 默认值）。
+    let jar: String?
     
     init(key: String = "", name: String = "", api: String = "",
          searchable: Int = 1, filterable: Int = 1, quickSearch: Int = 0,
-         playerType: Int = 0, type: Int = 1, ext: String? = nil) {
+         playerType: Int = 0, type: Int = 1, ext: String? = nil,
+         jar: String? = nil) {
         self.key = key
         self.name = name
         self.api = api
@@ -36,15 +39,184 @@ struct SourceBean: Codable, Identifiable, Hashable {
         self.playerType = playerType
         self.type = type
         self.ext = ext
+        self.jar = jar
     }
     
-    var isSearchable: Bool { searchable == 1 }
+    /// The CatVod Douban provider exposes recommendations, not media details.
+    var isRecommendationCatalog: Bool {
+        type == 3 && ["/spider/douban/3", "/spider/nodejs_douban/3"].contains(api)
+    }
+    /// CatVod 的日期通知入口不是影片检索服务，即使配置误标 searchable。
+    var isSearchable: Bool {
+        searchable == 1 && !isRecommendationCatalog && !(type == 3 && api == "/spider/gengxin/3")
+    }
     var isFilterable: Bool { filterable == 1 }
-    var isQuickSearchEnabled: Bool { quickSearch == 1 }
+    var isQuickSearchEnabled: Bool { quickSearch == 1 && !isRecommendationCatalog }
+    var isSearchOnly: Bool {
+        key == Self.cloudPanKey || api == Self.panSearchAPI
+    }
+    /// 已知以网盘分享提供资源的 CatVod 目录；仅用于分配搜索名额，
+    /// 不表示其中每条线路都可用，也不改变首页和播放能力。
+    var isCloudShareCatalog: Bool {
+        type == 3 && [
+            "/spider/mypan/3", "/spider/wogg/3", "/spider/duoduo/3", "/spider/huban/3",
+            "/spider/muou/3", "/spider/kuaiying/3", "/spider/shandian/3",
+            "/spider/labi/3", "/spider/huajuan/3", "/spider/guanying/3",
+            "/spider/qwmkv/3", "/spider/libvio/3", "/spider/pianku/3",
+            "/spider/woniu4k/3", "/spider/zhinan4k/3", "/spider/jutou/3",
+            "/spider/pan123ziyuan/3", "/spider/yidong4k/3"
+        ].contains(api)
+    }
+    var isHomeEligible: Bool { isSupportedInSwift && !isSearchOnly }
+
+    static let cloudPanKey = "builtin_cloudpan"
+    static let kkPanSearchKey = "builtin_kkpans"
+    static let cloudPanBundleURL = "https://raw.githubusercontent.com/qist/tvbox/master/cat/dist/index.js"
+    static let panSearchAPI = "/spider/pansearch/3"
+
+    static var cloudPan: SourceBean {
+        SourceBean(
+            key: cloudPanKey,
+            name: "☁️ 网盘聚合",
+            api: "/spider/cloudpan/3",
+            searchable: 1,
+            filterable: 0,
+            quickSearch: 1,
+            type: 3,
+            jar: cloudPanBundleURL
+        )
+    }
+
+    static var kkPanSearch: SourceBean {
+        SourceBean(
+            key: kkPanSearchKey,
+            name: "🔎 KK网盘｜夸克",
+            api: panSearchAPI,
+            searchable: 1,
+            filterable: 0,
+            quickSearch: 1,
+            type: 3,
+            ext: #"{"engine":"kkpans"}"#,
+            jar: cloudPanBundleURL
+        )
+    }
+
+    /// Gateway 支持 Android Worker 的 csp_* JAR，以及原生 Node 的 CatVod `/spider/` 接口。
+    var isSpiderGatewayCompatible: Bool {
+        type == 3
+            && (api.hasPrefix("csp_") || api.hasPrefix("/spider/"))
+            && !(jar?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
+
+    /// 将已验证的 Guard、盘搜 JAR 与 DRPY 脚本协议替换为纯 Node 实现。
+    func applyingNodeCompatibility(baseConfigURL: String? = nil) -> SourceBean {
+        guard type == 3 else { return self }
+        if api == "csp_YpanSoGuard" || api == "csp_MIPanSoGuard" {
+            return nodeCompatiblePanSearch(engine: "kuafu")
+        }
+        if api == "csp_S_zpsGuard"
+            || api == "csp_PanSearchGuard"
+            || api == "csp_QuarkPanso" {
+            return nodeCompatiblePanSearch(engine: "pansou")
+        }
+        if api == "csp_Funletu" || isDRPYScript(named: "funletu.js") {
+            return nodeCompatiblePanSearch(engine: "funletu")
+        }
+        if isDRPYScript(named: "yyets.js") {
+            return nodeCompatiblePanSearch(engine: "yyets")
+        }
+        if isDRPYScript(named: "kkpans.js") {
+            return nodeCompatiblePanSearch(engine: "kkpans")
+        }
+        if api == "csp_QuarkShare",
+           let listURL = resolvedQuarkShareListURL(baseConfigURL: baseConfigURL) {
+            return nodeCompatiblePanSearch(
+                engine: "quarkshare",
+                additionalValues: ["listURL": listURL]
+            )
+        }
+        guard api == "csp_SixVGuard" else { return self }
+        return SourceBean(
+            key: key,
+            name: name,
+            api: "/spider/xb6v/3",
+            searchable: searchable,
+            filterable: filterable,
+            quickSearch: quickSearch,
+            playerType: playerType,
+            type: type,
+            ext: ext ?? "https://www.xb6v.com/",
+            jar: "https://raw.githubusercontent.com/qist/tvbox/master/cat/dist/index.js"
+        )
+    }
+
+    private func isDRPYScript(named scriptName: String) -> Bool {
+        guard api.lowercased().contains("drpy"),
+              let path = ext?.split(separator: "$", maxSplits: 1).first else {
+            return false
+        }
+        let normalizedPath = String(path).lowercased()
+        let normalizedName = scriptName.lowercased()
+        return normalizedPath.hasSuffix("/\(normalizedName)")
+            || normalizedPath == normalizedName
+    }
+
+    private func resolvedQuarkShareListURL(baseConfigURL: String?) -> String? {
+        guard let ext else { return nil }
+        let candidates = ext
+            .components(separatedBy: "$$$")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let rawPath = candidates.last else { return nil }
+        if rawPath.hasPrefix("http://") || rawPath.hasPrefix("https://") {
+            return rawPath
+        }
+        guard let baseConfigURL,
+              let baseURL = URL(string: baseConfigURL),
+              let resolved = URL(string: rawPath, relativeTo: baseURL)?.absoluteURL,
+              ["http", "https"].contains(resolved.scheme?.lowercased() ?? "") else {
+            return nil
+        }
+        return resolved.absoluteString
+    }
+
+    private func nodeCompatiblePanSearch(
+        engine: String,
+        additionalValues: [String: Any] = [:]
+    ) -> SourceBean {
+        var values: [String: Any] = ["engine": engine]
+        values.merge(additionalValues) { _, new in new }
+        if let ext,
+           let data = ext.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            values.merge(object) { current, _ in current }
+        }
+        let resolvedExt = (try? JSONSerialization.data(withJSONObject: values))
+            .flatMap { String(data: $0, encoding: .utf8) }
+        return SourceBean(
+            key: key,
+            name: name,
+            api: Self.panSearchAPI,
+            searchable: searchable,
+            filterable: 0,
+            quickSearch: quickSearch,
+            playerType: playerType,
+            type: type,
+            ext: resolvedExt,
+            jar: Self.cloudPanBundleURL
+        )
+    }
     
-    /// 是否在 Swift 版中受支持（type=3 为 JAR/Spider，需要 Java 运行时，暂不支持）
+    /// Node type=3 在 macOS、iPhone 和 iPad 均由内置运行组件提供。
     var isSupportedInSwift: Bool {
-        return type == 0 || type == 1 || type == 4
+        if type == 0 || type == 1 || type == 4 { return true }
+        guard isSpiderGatewayCompatible else { return false }
+#if os(macOS) || os(iOS)
+        if api.hasPrefix("/spider/") { return true }
+        return !SpiderGatewaySettings.savedBaseURL.isEmpty
+#else
+        return SpiderGatewaySettings.isConfigured
+#endif
     }
     
     /// 类型描述
@@ -52,7 +224,7 @@ struct SourceBean: Codable, Identifiable, Hashable {
         switch type {
         case 0: return "XML"
         case 1: return "JSON"
-        case 3: return "JAR"
+        case 3: return api.hasPrefix("/spider/") ? "Node" : "JAR"
         case 4: return "Remote"
         default: return "未知"
         }

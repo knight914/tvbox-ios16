@@ -1,77 +1,202 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-# 设置工作目录为脚本所在目录
 cd "$(dirname "$0")"
-
-echo "清理构建目录..."
-rm -rf build
-rm -rf tvbox.xcarchive
-rm -f TVBox.ipa
-
-# 证书和配置 (从 secrets.sh 加载，此文件在 IOS-key 中已 gitignore)
-if [ -f "IOS-key/secrets.sh" ]; then
-    source "IOS-key/secrets.sh"
-else
-    echo "❌ 错误: 未找到 IOS-key/secrets.sh，请确保该文件存在。"
-    exit 1
-fi
-
-P12_PATH="IOS-key/cert.p12"
-PROVISION_PATH="IOS-key/cert.mobileprovision"
-# 变量已从 secrets.sh 加载: $P12_PASSWORD, $PROVISION_UUID, $TEAM_ID, $BUNDLE_ID, $SIGNING_IDENTITY
-
-echo "安装 Provisioning Profile..."
-mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
-cp "$PROVISION_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROVISION_UUID.mobileprovision"
-
-echo "导入 P12 证书..."
-# 将证书导入当前用户的默认钥匙串 (login.keychain)
-security import "$P12_PATH" -k ~/Library/Keychains/login.keychain-db -P "$P12_PASSWORD" -T /usr/bin/codesign || true
-# 解锁钥匙串以防超时
-security unlock-keychain -p "" ~/Library/Keychains/login.keychain-db
-
-echo "Regenerating project with XcodeGen..."
-xcodegen generate
+source scripts/build_paths.sh
 
 SCHEME="tvbox"
 CONFIGURATION="Release"
-ARCHIVE_PATH="build/tvbox.xcarchive"
-EXPORT_PATH="build/exported"
-EXPORT_OPTIONS="ExportOptions.plist"
+ARCHIVE_PATH="${TVBOX_DERIVED_DATA_PATH}/Archives/TVBox-iOS.xcarchive"
+EXPORT_PATH="${TVBOX_DERIVED_DATA_PATH}/Packaging/iOS/exported"
+EXPORT_OPTIONS="Config/Local/ExportOptions.plist"
+OUTPUT_IPA="${TVBOX_DERIVED_DATA_PATH}/Packages/TVBox.ipa"
+UNSIGNED_BUILD=0
+CHECK_ONLY=0
 
-echo "开始构建 iOS Archive..."
+usage() {
+    cat <<'EOF'
+用法: ./package_ios.sh [--check] [--unsigned]
+
+  --check  只检查 Xcode、iOS 平台和签名配置，不清理或构建产物。
+  --unsigned  生成未签名 IPA，安装前需用侧载工具自行签名。
+EOF
+}
+
+require_command() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        echo "❌ 缺少命令: $1" >&2
+        exit 1
+    fi
+}
+
+preflight() {
+    require_command xcodebuild
+    require_command xcodegen
+    require_command plutil
+    require_command security
+
+    local destinations
+    destinations="$(
+        xcodebuild \
+            -project tvbox.xcodeproj \
+            -scheme "$SCHEME" \
+            -derivedDataPath "$TVBOX_DERIVED_DATA_PATH" \
+            -showdestinations 2>&1 || true
+    )"
+    if grep -Eq 'platform:iOS.*error:.*(is not installed|not installed)' <<<"$destinations"; then
+        echo "❌ Xcode 的 iOS 平台组件尚未完整安装。" >&2
+        echo "   请在 Xcode > Settings > Components 安装 iOS，" >&2
+        echo "   或运行: xcodebuild -downloadPlatform iOS" >&2
+        return 1
+    fi
+    if ! grep -q 'platform:iOS' <<<"$destinations"; then
+        echo "❌ 当前 Xcode 没有可用的 iOS 构建目标。" >&2
+        return 1
+    fi
+
+    if [[ "$UNSIGNED_BUILD" == "1" ]]; then
+        echo "✅ iOS 平台检查通过；将生成需要重新签名的 IPA。"
+        return 0
+    fi
+
+    local build_settings
+    build_settings="$(
+        xcodebuild \
+            -project tvbox.xcodeproj \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -sdk iphoneos \
+            -derivedDataPath "$TVBOX_DERIVED_DATA_PATH" \
+            -showBuildSettings 2>/dev/null || true
+    )"
+
+    local team_id
+    team_id="$(
+        awk -F ' = ' '/^[[:space:]]*DEVELOPMENT_TEAM = / && $2 != "" { print $2; exit }' \
+            <<<"$build_settings"
+    )"
+    if [[ -z "$team_id" ]]; then
+        echo "❌ 未配置 Apple Developer Team。" >&2
+        echo "   请复制 Config/Templates/Signing.example.xcconfig 到" >&2
+        echo "   Config/Local/Signing.xcconfig，并填写本机签名信息。" >&2
+        return 1
+    fi
+
+    local bundle_id
+    bundle_id="$(
+        awk -F ' = ' '/^[[:space:]]*PRODUCT_BUNDLE_IDENTIFIER = / && $2 != "" { print $2; exit }' \
+            <<<"$build_settings"
+    )"
+    if [[ -z "$bundle_id" ]]; then
+        echo "❌ 未解析到 iOS Bundle Identifier。" >&2
+        return 1
+    fi
+    if [[ "$bundle_id" == "com.tvbox.app" ]]; then
+        echo "⚠️  当前仍使用公共示例 Bundle ID；若 App ID 冲突，请在本地签名配置中改为唯一值。"
+    fi
+
+    if [[ -f "$EXPORT_OPTIONS" ]]; then
+        plutil -lint "$EXPORT_OPTIONS" >/dev/null
+        if grep -q 'YOUR_TEAM_ID' "$EXPORT_OPTIONS"; then
+            echo "❌ $EXPORT_OPTIONS 仍包含占位 Team ID。" >&2
+            return 1
+        fi
+        echo "✅ 已找到本地 IPA 导出配置。"
+    else
+        echo "ℹ️  未找到 $EXPORT_OPTIONS；本次只会生成 xcarchive。"
+    fi
+
+    local valid_identities
+    valid_identities="$(
+        security find-identity -v -p codesigning 2>/dev/null |
+            awk '/valid identities found/ { print $1; exit }'
+    )"
+    if [[ "${valid_identities:-0}" == "0" ]]; then
+        echo "⚠️  钥匙串暂时没有可用签名证书；Xcode 会尝试从已登录账号自动创建或下载。"
+    fi
+
+    echo "✅ iOS 打包预检通过（签名值未输出）。"
+}
+
+for argument in "$@"; do
+    case "$argument" in
+        --check) CHECK_ONLY=1 ;;
+        --unsigned) UNSIGNED_BUILD=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+done
+
+if [[ "$CHECK_ONLY" == "1" ]]; then
+    preflight
+    exit 0
+fi
+
+echo "生成最新 Xcode 工程..."
+xcodegen generate >/dev/null
+preflight
+
+echo "清理上次的 iOS 打包产物..."
+rm -rf "$ARCHIVE_PATH" "$EXPORT_PATH"
+rm -f "$OUTPUT_IPA"
+mkdir -p "${TVBOX_DERIVED_DATA_PATH}/Archives" "${TVBOX_DERIVED_DATA_PATH}/Packages"
+
+if [[ "${TVBOX_INCLUDE_LOCAL_CONFIG:-0}" == "1" ]]; then
+    echo "⚠️  本次个人构建会包含 Config/Local/TVBoxPresets.json，请勿公开发布产物。"
+else
+    echo "Release 使用公开空预设，不会把本机接口打入安装包。"
+fi
+
+signing_arguments=(-allowProvisioningUpdates)
+if [[ "$UNSIGNED_BUILD" == "1" ]]; then
+    signing_arguments=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM=)
+    echo "开始构建未签名 iOS Archive..."
+else
+    echo "开始构建 iOS Archive（Xcode 自动签名）..."
+fi
 xcodebuild archive \
     -project tvbox.xcodeproj \
     -scheme "$SCHEME" \
     -configuration "$CONFIGURATION" \
     -destination "generic/platform=iOS" \
+    -derivedDataPath "$TVBOX_DERIVED_DATA_PATH" \
     -archivePath "$ARCHIVE_PATH" \
-    CODE_SIGN_STYLE=Manual \
-    CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
-    PROVISIONING_PROFILE_SPECIFIER="$PROVISION_UUID" \
-    DEVELOPMENT_TEAM="$TEAM_ID" \
-    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
+    "${signing_arguments[@]}"
 
-if [ -f "$EXPORT_OPTIONS" ]; then
-    echo "发现 $EXPORT_OPTIONS，尝试导出 IPA..."
-    mkdir -p "$EXPORT_PATH"
-    xcodebuild -exportArchive \
-        -archivePath "$ARCHIVE_PATH" \
-        -exportOptionsPlist "$EXPORT_OPTIONS" \
-        -exportPath "$EXPORT_PATH" \
-        -allowProvisioningUpdates
-
-    # 查找生成的 .ipa 文件并移动到根目录
-    IPA_FILE=$(find "$EXPORT_PATH" -name "*.ipa" | head -n 1)
-    if [ -n "$IPA_FILE" ]; then
-        cp "$IPA_FILE" ./TVBox.ipa
-        echo "✅ 打包完成！生成文件: TVBox.ipa"
-    else
-        echo "⚠️  未能在导出目录中找到 .ipa 文件。"
-    fi
-else
-    echo "ℹ️  未找到 $EXPORT_OPTIONS，仅生成 Archive。"
-    echo "✅ 构建完成！Archive 路径: $ARCHIVE_PATH"
-    echo "您可以打开 Xcode 使用 Distribute App 手动导出 IPA。"
+if [[ "$UNSIGNED_BUILD" == "1" ]]; then
+    unsigned_staging="${TVBOX_DERIVED_DATA_PATH}/Packaging/iOS/unsigned"
+    archived_app="${ARCHIVE_PATH}/Products/Applications/TVBox.app"
+    [[ -d "$archived_app" ]] || { echo "❌ Archive 中缺少 TVBox.app" >&2; exit 1; }
+    rm -rf "$unsigned_staging"
+    mkdir -p "$unsigned_staging/Payload"
+    ditto "$archived_app" "$unsigned_staging/Payload/TVBox.app"
+    ditto -c -k --keepParent --norsrc --noextattr "$unsigned_staging/Payload" "$OUTPUT_IPA"
+    echo "✅ 未签名 IPA: ${OUTPUT_IPA}（安装前需要重新签名）"
+    exit 0
 fi
+
+if [[ ! -f "$EXPORT_OPTIONS" ]]; then
+    echo "✅ Archive 已生成: $ARCHIVE_PATH"
+    echo "   创建 $EXPORT_OPTIONS 后重跑脚本可自动导出 IPA。"
+    exit 0
+fi
+
+echo "导出 IPA..."
+mkdir -p "$EXPORT_PATH"
+xcodebuild -exportArchive \
+    -derivedDataPath "$TVBOX_DERIVED_DATA_PATH" \
+    -archivePath "$ARCHIVE_PATH" \
+    -exportOptionsPlist "$EXPORT_OPTIONS" \
+    -exportPath "$EXPORT_PATH" \
+    -allowProvisioningUpdates
+
+shopt -s nullglob
+ipa_files=("$EXPORT_PATH"/*.ipa)
+shopt -u nullglob
+if (( ${#ipa_files[@]} == 0 )); then
+    echo "❌ 导出完成，但没有找到 IPA 文件。" >&2
+    exit 1
+fi
+
+cp "${ipa_files[0]}" "$OUTPUT_IPA"
+echo "✅ 打包完成: $OUTPUT_IPA"

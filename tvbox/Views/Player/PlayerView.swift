@@ -10,45 +10,15 @@ import UIKit
 /// 跨平台播放器：macOS 使用 AVPlayerView，避免 SwiftUI.VideoPlayer 在 macOS 的崩溃问题
 struct PlatformVideoPlayer: View {
     let player: AVPlayer
-
+    
     var body: some View {
         #if os(macOS)
         MacOSPlayerView(player: player)
         #else
-        ControlsFreePlayerView(player: player)
+        VideoPlayer(player: player)
         #endif
     }
 }
-
-#if os(iOS)
-/// iOS：用 AVPlayerViewController 但**关闭其自带控制条**。
-/// SwiftUI 的 VideoPlayer 自带系统控制层（↺10 / AirPlay / ⋯），
-/// 不仅没有全屏按钮，还会盖在我们自绘的控制条上抢点击，
-/// 导致"点击播放器找不到全屏选项"。关掉后所有控制一律由
-/// 本文件的自绘 UI 提供（右上角常驻全屏按钮 + 底部控制条 + 手势层）。
-private struct ControlsFreePlayerView: UIViewControllerRepresentable {
-    let player: AVPlayer
-
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController()
-        controller.player = player
-        controller.showsPlaybackControls = false
-        controller.videoGravity = .resizeAspect
-        return controller
-    }
-
-    func updateUIViewController(_ uiView: AVPlayerViewController, context: Context) {
-        if uiView.player !== player {
-            uiView.player = player
-        }
-        uiView.showsPlaybackControls = false
-    }
-
-    static func dismantleUIViewController(_ uiView: AVPlayerViewController, coordinator: ()) {
-        uiView.player = nil
-    }
-}
-#endif
 
 #if os(macOS)
 private struct MacOSPlayerView: NSViewRepresentable {
@@ -78,23 +48,29 @@ private struct MacOSPlayerView: NSViewRepresentable {
 /// 系统播放器会话控制器：用于在页面内联与全屏视图间复用同一 AVPlayer，避免重复拉流
 @MainActor
 final class SystemPlayerSessionController: ObservableObject {
+    let subtitles = SystemSubtitleController()
+    var isActuallyPlaying: Bool { player?.timeControlStatus == .playing }
     fileprivate var player: AVPlayer?
     fileprivate var mediaURLString: String?
+    fileprivate var mediaHeaders: [String: String] = [:]
     
-    func setPlayer(_ newPlayer: AVPlayer, urlString: String) {
+    func setPlayer(_ newPlayer: AVPlayer, urlString: String, headers: [String: String]) {
         if player !== newPlayer {
             player?.pause()
             player?.replaceCurrentItem(with: nil)
         }
         player = newPlayer
         mediaURLString = urlString
+        mediaHeaders = headers
     }
     
     func stop() {
+        subtitles.reset()
         let stoppingPlayer = player
         player?.pause()
         player = nil
         mediaURLString = nil
+        mediaHeaders = [:]
         // AVPlayer.replaceCurrentItem(with: nil) 在播放网络流时会同步阻塞主线程数秒。
         // 将其移到后台执行，闭包持有 AVPlayer 强引用防止提前 dealloc。
         if let stoppingPlayer {
@@ -108,20 +84,17 @@ final class SystemPlayerSessionController: ObservableObject {
 /// 视频播放器组件 - 对应 Android 版 PlayFragment
 struct PlayerView: View {
     let urlString: String
+    var headers: [String: String] = [:]
+    var sourceSubtitles: [SourceSubtitle] = []
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
-    /// 竖屏全屏入口：画面保持竖向铺满整屏（适合竖屏视频）。nil 时不显示竖屏按钮。
-    var onPortraitFullScreen: (() -> Void)? = nil
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
     var systemController: SystemPlayerSessionController? = nil
     var vlcController: VLCPlayerController? = nil
-    /// 是否作为全屏播放器呈现。
-    var isFullScreenPresentation: Bool = false
-    /// 全屏顶部标题。
-    var fullScreenTitle: String = ""
+    var mpvController: MPVPlayerController? = nil
     @AppStorage(HawkConfig.PLAY_TYPE_VOD) private var vodPlayTypeRaw = -1
     @AppStorage(HawkConfig.PLAY_TYPE) private var legacyPlayTypeRaw = PlayerEngine.system.rawValue
     
@@ -135,7 +108,7 @@ struct PlayerView: View {
         } else {
             rawValue = PlayerEngine.system.rawValue
         }
-        return PlayerEngine.fromStoredValue(rawValue)
+        return OfflinePlaybackPolicy.engine(for: URL(string: urlString), preferred: PlayerEngine.fromStoredValue(rawValue))
     }
     
     var body: some View {
@@ -144,46 +117,71 @@ struct PlayerView: View {
             case .system:
                 AVPlayerContentView(
                     urlString: urlString,
+                    headers: headers,
                     startPosition: startPosition,
                     onProgressChanged: onProgressChanged,
                     onPlaybackEnded: onPlaybackEnded,
                     onToggleFullScreen: onToggleFullScreen,
-                    onPortraitFullScreen: onPortraitFullScreen,
                     canPlayNext: canPlayNext,
                     onPlayNext: onPlayNext,
-                    sharedController: systemController,
-                    isFullScreenPresentation: isFullScreenPresentation,
-                    fullScreenTitle: fullScreenTitle
+                    sharedController: systemController
                 )
+            case .mpv:
+                #if os(macOS) && canImport(Libmpv)
+                MPVPlayerView(urlString: urlString, headers: headers, sourceSubtitles: sourceSubtitles, startPosition: startPosition,
+                              onProgressChanged: onProgressChanged, onPlaybackEnded: onPlaybackEnded,
+                              onToggleFullScreen: onToggleFullScreen, canPlayNext: canPlayNext,
+                              onPlayNext: onPlayNext, sharedController: mpvController)
+                #else
+                Text("当前平台暂不支持 mpv")
+                #endif
             case .vlc:
                 VLCVodPlayerView(
                     urlString: urlString,
+                    headers: headers,
                     startPosition: startPosition,
                     onProgressChanged: onProgressChanged,
                     onPlaybackEnded: onPlaybackEnded,
                     onToggleFullScreen: onToggleFullScreen,
-                    onPortraitFullScreen: onPortraitFullScreen,
                     canPlayNext: canPlayNext,
                     onPlayNext: onPlayNext,
-                    sharedController: vlcController,
-                    isFullScreenPresentation: isFullScreenPresentation,
-                    fullScreenTitle: fullScreenTitle
+                    sharedController: vlcController
                 )
             }
         }
+        .overlay(alignment: .topTrailing) {
+            #if os(macOS) && canImport(Libmpv)
+            if selectedEngine != .mpv, !sourceSubtitles.isEmpty {
+                Button {
+                    vodPlayTypeRaw = PlayerEngine.mpv.rawValue
+                } label: {
+                    Label("此源有 \(sourceSubtitles.count) 份外挂字幕 · 使用 mpv", systemImage: "captions.bubble")
+                        .font(.caption)
+                        .padding(8)
+                        .background(.black.opacity(0.75), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .padding(12)
+            }
+            #endif
+        }
+        .environment(\.colorScheme, .dark)
         .id(selectedEngine.rawValue)
         .onAppear {
             if selectedEngine != .system {
                 systemController?.stop()
             }
+            if selectedEngine != .mpv { mpvController?.stop() }
             if selectedEngine != .vlc {
                 vlcController?.stop()
             }
         }
-        .onChange(of: selectedEngine) { newValue in
+        .onCompatibleChange(of: selectedEngine) { _, newValue in
             if newValue != .system {
                 systemController?.stop()
             }
+            if newValue != .mpv { mpvController?.stop() }
             if newValue != .vlc {
                 vlcController?.stop()
             }
@@ -195,19 +193,14 @@ struct PlayerView: View {
 struct AVPlayerContentView: View {
     private static let supportedPlaybackRates: [Float] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
     let urlString: String
+    var headers: [String: String] = [:]
     var startPosition: Double = 0
     var onProgressChanged: ((Double, Double?) -> Void)? = nil
     var onPlaybackEnded: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
-    /// 竖屏全屏入口（nil 时不显示竖屏按钮）。
-    var onPortraitFullScreen: (() -> Void)? = nil
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
     var sharedController: SystemPlayerSessionController? = nil
-    /// 是否作为全屏播放器呈现（显示顶部返回栏，双击语义切换）。
-    var isFullScreenPresentation: Bool = false
-    /// 全屏顶部标题（如「第3集」）。
-    var fullScreenTitle: String = ""
     @AppStorage(HawkConfig.PLAY_SPEED) private var savedPlaybackRate = 1.0
     @State private var player: AVPlayer?
     @State private var playbackEndObserver: NSObjectProtocol?
@@ -229,6 +222,9 @@ struct AVPlayerContentView: View {
     @State private var isDraggingProgress = false
     @State private var draggingSeconds: Double = 0
     @State private var playerObservers: [NSKeyValueObservation] = []
+    @State private var ownedSubtitles = SystemSubtitleController()
+    private var subtitles: SystemSubtitleController { sharedController?.subtitles ?? ownedSubtitles }
+    @State private var sleepPreventionOwner = UUID()
     
     @State private var videoZoomScale: CGFloat = 1.0
 
@@ -302,93 +298,8 @@ struct AVPlayerContentView: View {
                     }
                 },
                 currentTime: currentTime,
-                duration: duration,
-                isFullScreenPresentation: isFullScreenPresentation,
-                onEnterFullScreen: { onToggleFullScreen?() }
+                duration: duration
             )
-        }
-        #endif
-        #if os(iOS)
-        .overlay(alignment: .top) {
-            // 全屏时的顶部返回栏：跟随控制条一起显示/隐藏，
-            // 避免常驻按钮导致误触退出全屏。
-            if isFullScreenPresentation {
-                HStack(spacing: 12) {
-                    Button {
-                        wakeUpControls()
-                        onToggleFullScreen?()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 17, weight: .bold))
-                            .foregroundColor(.white)
-                            .frame(width: 40, height: 40)
-                            .background(Color.black.opacity(0.35))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-
-                    Text(fullScreenTitle)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-
-                    Spacer()
-                }
-                .padding(.leading, 14)
-                .padding(.trailing, 20)
-                .padding(.top, 10)
-                .background(
-                    LinearGradient(
-                        colors: [.black.opacity(0.55), .clear],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .ignoresSafeArea()
-                    .frame(height: 120), alignment: .top
-                )
-                .opacity(showControls ? 1.0 : 0.0)
-                .animation(.easeInOut(duration: 0.3), value: showControls)
-                .allowsHitTesting(showControls)
-            }
-        }
-        #endif
-        #if os(iOS)
-        .overlay(alignment: .topTrailing) {
-            // 非全屏时右上角常驻按钮组：竖屏全屏 + 横屏全屏，不随控制条隐藏。
-            if !isFullScreenPresentation {
-                HStack(spacing: 6) {
-                    if let onPortraitFullScreen {
-                        Button {
-                            onPortraitFullScreen()
-                        } label: {
-                            Image(systemName: "rectangle.portrait")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.white)
-                                .frame(width: 26, height: 26)
-                                .background(Color.black.opacity(0.4))
-                                .clipShape(Circle())
-                                .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 0.5))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    if let onToggleFullScreen {
-                        Button {
-                            onToggleFullScreen()
-                        } label: {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(.white)
-                                .frame(width: 26, height: 26)
-                                .background(Color.black.opacity(0.4))
-                                .clipShape(Circle())
-                                .overlay(Circle().stroke(Color.white.opacity(0.3), lineWidth: 0.5))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.trailing, 10)
-                .padding(.top, 10)
-            }
         }
         #endif
         .overlay(alignment: .bottom) {
@@ -396,6 +307,7 @@ struct AVPlayerContentView: View {
                 if player != nil {
                     playbackControls(containerWidth: proxy.size.width)
                         .opacity(showControls ? 1.0 : 0.0)
+                        .allowsHitTesting(showControls)
                         .animation(.easeInOut(duration: 0.3), value: showControls)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 }
@@ -424,13 +336,24 @@ struct AVPlayerContentView: View {
             syncRateFromSettings()
             setupPlayer()
             wakeUpControls()
+            PlaybackSleepPreventer.shared.setPlaybackActive(isPlaying, owner: sleepPreventionOwner)
         }
-        .onChange(of: urlString) { _ in
+        .onCompatibleChange(of: urlString) { _, _ in
             syncRateFromSettings()
             setupPlayer()
             wakeUpControls()
         }
+        .onCompatibleChange(of: headers) { _, _ in
+            syncRateFromSettings()
+            setupPlayer()
+            wakeUpControls()
+        }
+        .onCompatibleChange(of: isPlaying) { _, playing in
+            PlaybackSleepPreventer.shared.setPlaybackActive(playing, owner: sleepPreventionOwner)
+        }
+
         .onDisappear {
+            PlaybackSleepPreventer.shared.end(owner: sleepPreventionOwner)
             cleanupPlayer(keepSharedPlayer: sharedController != nil)
             controlsTimer?.invalidate()
             osdTimer?.invalidate()
@@ -439,7 +362,9 @@ struct AVPlayerContentView: View {
     
     private func setupPlayer() {
         guard let url = Self.sanitizedURL(from: urlString) else {
-            print("[AVPlayer] URL sanitization failed for: \(urlString)")
+            #if DEBUG
+            print("[AVPlayer] URL sanitization failed")
+            #endif
             return
         }
         let targetURLString = url.absoluteString
@@ -449,6 +374,7 @@ struct AVPlayerContentView: View {
         
         if let sharedController,
            sharedController.mediaURLString == targetURLString,
+           sharedController.mediaHeaders == headers,
            let sharedPlayer = sharedController.player {
             cleanupPlayer(keepSharedPlayer: true)
             // 强制重新关联 AVPlayerItem，修复从全屏退出后 VideoPlayer 黑屏问题。
@@ -477,15 +403,18 @@ struct AVPlayerContentView: View {
         // 清理旧播放器
         cleanupPlayer()
         
-        // 使用 AVURLAsset 并设置自定义 HTTP 头，解决部分 CDN 拒绝无 User-Agent 请求的问题
-        let asset = AVURLAsset(url: url)
+        // Spider 播放结果可能要求 User-Agent、Referer 或 Cookie。
+        let options: [String: Any]? = headers.isEmpty
+            ? nil
+            : ["AVURLAssetHTTPHeaderFieldsKey": headers]
+        let asset = AVURLAsset(url: url, options: options)
         asset.resourceLoader.setDelegate(nil, queue: nil)
         let playerItem = AVPlayerItem(asset: asset)
         playerItem.preferredForwardBufferDuration = 0
         let newPlayer = AVPlayer(playerItem: playerItem)
         newPlayer.defaultRate = preferredRate
         if let sharedController {
-            sharedController.setPlayer(newPlayer, urlString: targetURLString)
+            sharedController.setPlayer(newPlayer, urlString: targetURLString, headers: headers)
         }
         
         player = newPlayer
@@ -535,6 +464,7 @@ struct AVPlayerContentView: View {
         ]
         // 监听 AVPlayerItem 状态，捕获加载失败的具体原因
         if let item = player.currentItem {
+            subtitles.bind(to: item)
             let itemObserver = item.observe(\.status, options: [.new]) { observedItem, _ in
                 if observedItem.status == .failed {
                     let errorDesc = observedItem.error?.localizedDescription ?? "未知错误"
@@ -580,6 +510,7 @@ struct AVPlayerContentView: View {
             player = nil
             return
         }
+        subtitles.reset()
         
         currentPlayer.pause()
         if sharedController?.player === currentPlayer {
@@ -735,104 +666,23 @@ struct AVPlayerContentView: View {
             .padding(.top, 8)
             .padding(.bottom, 4)
             
-            // 控制按钮行 — 紧凑排列
-            HStack(spacing: 0) {
-                // 左：倍速
+            MobilePlayerControlRow(
+                availableWidth: containerWidth,
+                isPlaying: isPlaying,
+                seekStep: seekStep,
+                canPlayNext: canPlayNext,
+                onSeek: { offset in
+                    wakeUpControls()
+                    seek(by: offset)
+                },
+                onTogglePlayback: { wakeUpControls(); togglePlayPauseWithOSD() },
+                onPlayNext: onPlayNext.map { action in { wakeUpControls(); action() } },
+                onToggleFullScreen: onToggleFullScreen.map { action in { wakeUpControls(); action() } }
+            ) {
                 playbackRateMenu
-                    .frame(minWidth: 36, alignment: .leading)
-                
-                Spacer()
-                
-                // 中间：主控按钮
-                HStack(spacing: 20) {
-                    Button {
-                        wakeUpControls()
-                        seek(by: -seekStep)
-                        showOSD(icon: "gobackward.\(Int(seekStep))")
-                    } label: {
-                        Image(systemName: "gobackward.\(Int(seekStep))")
-                            .font(.system(size: 16, weight: .medium))
-                            .frame(minWidth: 36, minHeight: 36)
-                    }
-                    .buttonStyle(.plain)
-                    
-                    Button {
-                        wakeUpControls()
-                        togglePlayPauseWithOSD()
-                    } label: {
-                        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 20, weight: .bold))
-                            .frame(minWidth: 36, minHeight: 36)
-                    }
-                    .buttonStyle(.plain)
-                    
-                    Button {
-                        wakeUpControls()
-                        seek(by: seekStep)
-                        showOSD(icon: "goforward.\(Int(seekStep))")
-                    } label: {
-                        Image(systemName: "goforward.\(Int(seekStep))")
-                            .font(.system(size: 16, weight: .medium))
-                            .frame(minWidth: 36, minHeight: 36)
-                    }
-                    .buttonStyle(.plain)
-
-                    if let onPlayNext {
-                        Button {
-                            guard canPlayNext else { return }
-                            wakeUpControls()
-                            onPlayNext()
-                            showOSD(icon: "forward.end.fill")
-                        } label: {
-                            Image(systemName: "forward.end.fill")
-                                .font(.system(size: 16, weight: .medium))
-                                .frame(minWidth: 36, minHeight: 36)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!canPlayNext)
-                        .opacity(canPlayNext ? 1 : 0.4)
-                    }
-                }
-                
-                Spacer()
-                
-                // 右：竖屏全屏 + 横屏全屏（醒目圆形按钮）
-                HStack(spacing: 4) {
-                    if let onPortraitFullScreen {
-                        Button {
-                            wakeUpControls()
-                            onPortraitFullScreen()
-                        } label: {
-                            Image(systemName: "rectangle.portrait")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(.white)
-                                .frame(width: 30, height: 30)
-                                .background(Color.white.opacity(0.18))
-                                .clipShape(Circle())
-                                .frame(minWidth: 36, minHeight: 36)
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    if let onToggleFullScreen {
-                        Button {
-                            wakeUpControls()
-                            onToggleFullScreen()
-                        } label: {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(.white)
-                                .frame(width: 30, height: 30)
-                                .background(Color.white.opacity(0.18))
-                                .clipShape(Circle())
-                                .frame(minWidth: 36, minHeight: 36)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+            } subtitles: {
+                subtitleMenu
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 6)
             #else
             // macOS: 保持两行布局
             HStack(spacing: 12) {
@@ -873,6 +723,7 @@ struct AVPlayerContentView: View {
             HStack(spacing: 0) {
                 HStack(spacing: 16) {
                     playbackRateMenu
+                    subtitleMenu
                 }
                 .frame(width: 150, alignment: .leading)
                 
@@ -998,6 +849,13 @@ struct AVPlayerContentView: View {
         .frame(width: controlWidth)
         #endif
         .environment(\.colorScheme, .dark)
+    }
+
+    private var subtitleMenu: some View {
+        SubtitleMenu(state: subtitles.state) { selection in
+            wakeUpControls()
+            subtitles.select(selection)
+        }
     }
 
     private var playbackRateMenu: some View {

@@ -1,257 +1,478 @@
 import SwiftUI
 
-/// 首页：不展示源站推荐与分类标签，只保留「继续观看」和「热门榜单」。
-/// 看什么内容通过榜单/搜索进入；源站的切换在详情页「换源」完成。
+/// 首页 - 对应 Android 版 HomeActivity + UserFragment
 struct HomeView: View {
-    @StateObject private var viewModel = HomeViewModel()
+    @StateObject private var viewModel = HomeViewModel(snapshotStore: .shared)
     @EnvironmentObject var appState: AppState
-    /// 观看历史（用于「继续观看」区块），实时响应增删。
-    @ObservedObject private var historyStore = CacheStore.shared
+    @State private var categoryScrollAnchorId: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    
+    // 网格布局
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    private var gridMetrics: PosterGridMetrics {
+        PosterGridMetrics(isRegularWidth: horizontalSizeClass == .regular)
+    }
+    #else
+    private let gridMetrics = PosterGridMetrics()
+    #endif
 
+    private var columns: [GridItem] { gridMetrics.columns }
+    
     var body: some View {
         NavigationStack {
-            ScrollView {
-                // 页面标题
-                HStack(spacing: 8) {
-                    Image(systemName: "play.rectangle.fill")
-                        .font(.system(size: 22))
-                        .foregroundColor(.orange)
-                    Text("推荐")
-                        .font(.system(size: 24, weight: .heavy))
-                        .foregroundColor(.white)
-                    Spacer()
+            VStack(spacing: 0) {
+                #if os(iOS)
+                if !viewModel.sorts.isEmpty {
+                    categoryTabBar
+                        .frame(minHeight: 44)
+                        .padding(.vertical, 4)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
+                #else
+                HStack(spacing: 12) {
+                    if !viewModel.sorts.isEmpty {
+                        categoryTabBar
+                    } else {
+                        Spacer(minLength: 0)
+                    }
+                    sourceSelector
+                }
+                .frame(height: 44)
+                .padding(.trailing, 24)
+                .padding(.vertical, 4)
+                #endif
 
-                // 继续观看
-                continueWatchingSection
-
-                // 热门榜单（取源站分类前几名，横向海报排 + 排名角标）
-                ForEach(viewModel.recommendSections) { section in
-                    rankingRow(section)
+                if viewModel.isLoadingHome || viewModel.homeLoadMessage != nil {
+                    HStack {
+                        if viewModel.isLoadingHome { ProgressView().controlSize(.small) }
+                        Text(viewModel.homeLoadMessage ?? "正在更新首页…")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        if viewModel.isLoadingHome {
+                            Button("停止加载") { viewModel.stopHomeLoading() }
+                                .font(.caption)
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 6)
+                }
+                
+                if let message = viewModel.sourceRecoveryMessage {
+                    HStack(spacing: 12) {
+                        Text(message).font(.caption).foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        if !viewModel.isLoading {
+                            Button("重试原来源") { Task { await viewModel.retryUnavailableSource() } }
+                                .font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 6)
                 }
 
-                Color.clear.frame(height: 24)
+                if let group = viewModel.selectedCategoryGroup, group.categories.count > 1 {
+                    HomeSubcategoryPicker(group: group, selectedID: viewModel.selectedSort?.id) { category in
+                        viewModel.selectSort(category)
+                    }
+                }
+                if !viewModel.browseFilters.isEmpty {
+                    HomeBrowseFilterBar(filters: viewModel.browseFilters, selections: viewModel.activeFilters) {
+                        viewModel.selectFilter(key: $0, value: $1)
+                    } clear: {
+                        viewModel.clearFilters()
+                    }
+                }
+                // 内容区
+                contentArea
             }
-            .background(AppTheme.primaryGradient)
-            .navigationDestination(for: Movie.Video.self) { video in
-                DetailView(video: video)
+            .background(AppTheme.background)
+            #if os(iOS)
+            .navigationTitle("首页")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) { sourceSelector }
             }
-            .overlay {
-                if viewModel.isLoading && viewModel.recommendSections.isEmpty && recentRecords.isEmpty {
-                    VStack {
-                        Spacer()
-                        ProgressView()
-                            .scaleEffect(1.5)
-                            .tint(.orange)
-                        Text("加载中...")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .padding(.top, 12)
-                        Spacer()
+            #endif
+        }
+        .task {
+            await viewModel.refreshIfNeeded()
+        }
+    }
+    
+    // MARK: - 来源选择
+    
+    private var sourceSelector: some View {
+        Menu {
+            ForEach(ApiConfig.shared.sourceBeanList.filter { $0.isHomeEligible }) { source in
+                Button {
+                    ApiConfig.shared.setHomeSource(source)
+                    Task { await viewModel.refresh() }
+                } label: {
+                    HStack {
+                        Text(source.name)
+                        if source.key == ApiConfig.shared.homeSourceBean?.key {
+                            Image(systemName: "checkmark")
+                        }
                     }
                 }
             }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "play.tv.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(.orange)
+                Text(ApiConfig.shared.homeSourceBean?.name ?? "TVBox")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 160, alignment: .leading)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .frame(minHeight: 44)
         }
-        .task {
-            await viewModel.loadSorts()
-            await viewModel.loadRecommendSections()
-        }
-        .refreshable {
-            await viewModel.refresh()
-            await viewModel.loadRecommendSections()
+        .menuStyle(.borderlessButton)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+    
+    // MARK: - 分类标签栏
+    
+    private var categoryTabBar: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(viewModel.categoryGroups) { group in
+                        Button {
+                            viewModel.selectCategoryGroup(group)
+                        } label: {
+                            HomeCinemaCategoryLabel(title: group.title, isSelected: viewModel.selectedCategoryGroup?.id == group.id)
+                        }
+                        .buttonStyle(.plain)
+                        .id(group.id)
+                    }
+                }
+                .padding(.horizontal, 12)
+            }
+            .onAppear {
+                syncCategoryScrollAnchorIfNeeded()
+                scrollCategoryBar(to: categoryScrollAnchorId, proxy: proxy, animated: false)
+            }
+            .onCompatibleChange(of: viewModel.categoryGroups.map(\.id)) { oldValue, newValue in
+                syncCategoryScrollAnchorIfNeeded()
+                scrollCategoryBar(to: categoryScrollAnchorId, proxy: proxy, animated: false)
+            }
+            .onCompatibleChange(of: viewModel.selectedCategoryGroup?.id) { oldId, newId in
+                guard let newId else { return }
+                categoryScrollAnchorId = newId
+                scrollCategoryBar(to: newId, proxy: proxy)
+            }
         }
     }
 
-    // MARK: - 热门榜单
+    private func syncCategoryScrollAnchorIfNeeded() {
+        let groups = viewModel.categoryGroups
+        guard !groups.isEmpty else {
+            categoryScrollAnchorId = nil
+            return
+        }
+        if let selectedID = viewModel.selectedCategoryGroup?.id {
+            categoryScrollAnchorId = selectedID
+        } else if !groups.contains(where: { $0.id == categoryScrollAnchorId }) {
+            categoryScrollAnchorId = groups.first?.id
+        }
+    }
 
-    /// 榜单分区：标题 + 横向海报排，海报左上角带排名角标（前三名高亮）。
-    @ViewBuilder
-    private func rankingRow(_ section: HomeRecommendSection) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(AppTheme.accentGradient)
-                    .frame(width: 4, height: 16)
-                Text("热门\(section.sort.name)")
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundColor(.white)
-                Spacer()
+    private func scrollCategoryBar(to id: String?, proxy: ScrollViewProxy, animated: Bool = true) {
+        guard let id else { return }
+        
+        if animated && !reduceMotion {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                proxy.scrollTo(id, anchor: .center)
             }
-            .padding(.horizontal, 20)
-
-            if section.videos.isEmpty {
-                HStack {
+        } else {
+            proxy.scrollTo(id, anchor: .center)
+        }
+    }
+    
+    // MARK: - 内容区
+    
+    private var contentArea: some View {
+        Group {
+            if viewModel.isLoading && viewModel.displayedVideos.isEmpty {
+                ScrollView {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("正在加载\(viewModel.selectedSort?.name ?? "分类")…").font(.callout)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 20)
+                    LazyVGrid(columns: columns, spacing: gridMetrics.spacing) {
+                        ForEach(0..<8) { _ in
+                            VodCardView(video: Movie.Video(name: "正在加载"))
+                                .redacted(reason: .placeholder)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .padding(20)
+                }
+            } else if viewModel.selectedSort?.isRecommendation == true, viewModel.errorMessage == nil {
+                recommendationContent
+            } else if let error = viewModel.errorMessage,
+                      viewModel.selectedSort?.isRecommendation == false
+                        ? viewModel.categoryVideos.isEmpty
+                        : viewModel.homeVideos.isEmpty {
+                VStack(spacing: 12) {
                     Spacer()
-                    ProgressView()
-                        .tint(.orange)
-                        .padding(.vertical, 34)
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundColor(.orange)
+                    Text(error)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 40)
+                    
+                    // 如果是不支持的源类型，显示类型信息
+                    if let source = ApiConfig.shared.homeSourceBean, !source.isSupportedInSwift {
+                        Text("当前源类型: \(source.typeDescription)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    Button("重试") {
+                        Task { await viewModel.refresh() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    Spacer()
+                }
+            } else if viewModel.selectedSort?.isRecommendation == false,
+                      !viewModel.isLoading,
+                      viewModel.errorMessage == nil,
+                      viewModel.categoryVideos.isEmpty {
+                VStack(spacing: 12) {
+                    Spacer()
+                    Image(systemName: "film.stack")
+                        .font(.largeTitle)
+                        .foregroundColor(.secondary)
+                    Text(viewModel.activeFilters.isEmpty ? "该分类暂无内容" : "暂无符合筛选条件的影片")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    Button("重新加载") {
+                        Task { await viewModel.refresh() }
+                    }
+                    .buttonStyle(.bordered)
                     Spacer()
                 }
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 12) {
-                        ForEach(Array(section.videos.enumerated()), id: \.1.id) { index, video in
+                let videos = viewModel.displayedVideos
+                
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: gridMetrics.spacing) {
+                        ForEach(videos) { video in
                             NavigationLink(value: video) {
                                 VodCardView(video: video)
-                                    .frame(width: 112)
-                                    .overlay(alignment: .topLeading) {
-                                        rankBadge(number: index + 1)
-                                            .offset(x: -5, y: -5)
-                                    }
                             }
                             #if os(iOS)
                             .buttonStyle(VodCardPressStyle())
                             #else
                             .buttonStyle(.plain)
                             #endif
+                            .onAppear {
+                                Task { await viewModel.loadMoreIfNeeded(currentItem: video) }
+                            }
                         }
                     }
                     .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    
+                    if videos.isEmpty, !viewModel.isLoading, !viewModel.activeFilters.isEmpty {
+                        VStack(spacing: 10) {
+                            Text("已加载内容中暂无符合条件的影片").foregroundStyle(.secondary)
+                            Button("重置筛选") { viewModel.clearFilters() }
+                        }.padding()
+                    }
+
+                    // 加载更多
+                    if viewModel.selectedSort?.isRecommendation != true {
+                        if viewModel.isLoading {
+                            ProgressView("加载更多…").padding()
+                        } else if let error = viewModel.errorMessage {
+                            VStack(spacing: 8) {
+                                Text(error).font(.caption).foregroundStyle(.secondary)
+                                Button("重试加载更多") { Task { await viewModel.retryCategoryPage() } }
+                            }.padding()
+                        } else if !viewModel.hasMore {
+                            Text("已显示全部内容").font(.caption).foregroundStyle(.secondary).padding()
+                        } else {
+                            Button("加载更多") { Task { await viewModel.loadMore() } }.padding()
+                        }
+                    }
+                }
+                .id(viewModel.selectedSort?.id)
+                .refreshable {
+                    await viewModel.refresh()
                 }
             }
         }
-        .padding(.top, 18)
+        .navigationDestination(for: Movie.Video.self) { video in
+            if ApiConfig.shared.getSource(key: video.sourceKey)?.isRecommendationCatalog == true {
+                SearchView(initialKeyword: video.name, searchOnAppear: true,
+                           embeddedInNavigationStack: true)
+            } else {
+                DetailView(video: video)
+            }
+        }
     }
 
-    /// 排名角标：前三名橙色实心，其余深色半透明。
-    private func rankBadge(number: Int) -> some View {
-        Text("\(number)")
-            .font(.system(size: 11, weight: .heavy))
-            .foregroundColor(number <= 3 ? .black : .white.opacity(0.85))
-            .frame(width: 20, height: 20)
-            .background(
-                Circle().fill(number <= 3 ? AnyShapeStyle(Color.orange) : AnyShapeStyle(Color.black.opacity(0.6)))
-            )
-            .overlay(
-                Circle().stroke(Color.white.opacity(0.15), lineWidth: 0.5)
-            )
+    private var recommendationContent: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 28) {
+                if !viewModel.filteredHomeVideos.isEmpty {
+                    HomeCinemaShelf(title: "为你精选", videos: viewModel.filteredHomeVideos)
+                }
+
+                ForEach(viewModel.visibleRecommendationSections) { section in
+                    HomeRecommendationSectionView(section: section) {
+                        viewModel.openRecommendation(section)
+                    } retry: {
+                        Task { await viewModel.loadRecommendations() }
+                    }
+                }
+
+                if viewModel.isLoadingRecommendations {
+                    ProgressView("正在补充推荐内容…")
+                        .frame(maxWidth: .infinity).padding()
+                } else if viewModel.displayedVideos.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "film.stack").font(.largeTitle)
+                        Text(viewModel.activeFilters.isEmpty ? "当前来源暂无推荐内容" : "暂无符合筛选条件的推荐")
+                        if !viewModel.activeFilters.isEmpty {
+                            Button("重置筛选") { viewModel.clearFilters() }
+                        }
+                    }
+                    .frame(maxWidth: .infinity).padding(24)
+                }
+            }
+            .padding(.top, 16)
+            .padding(.bottom, 32)
+        }
+        .refreshable { await viewModel.refresh() }
     }
 
-    // MARK: - 继续观看
+}
 
-    /// 最近 10 条观看记录，最新在前。
-    /// 只取「未被手动移除」的条目：首页长按移除只影响这里，不会动历史记录页。
-    private var recentRecords: [VodRecord] {
-        Array(historyStore.continueWatchingRecords.prefix(10))
-    }
+struct HomeRecommendationSectionView: View {
+    let section: HomeRecommendationSection
+    let more: () -> Void
+    let retry: () -> Void
 
-    @ViewBuilder
-    private var continueWatchingSection: some View {
-        if !recentRecords.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 6) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.orange)
-                    Text("继续观看")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundColor(.white)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !section.videos.isEmpty {
+                HomeCinemaShelf(title: section.title, videos: section.videos, more: more)
+            } else {
+                HStack {
+                    Text(section.title).font(.system(size: 21, weight: .bold))
                     Spacer()
-                    Text("长按移除 · 不影响历史")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.4))
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 14)
-
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
-                        ForEach(recentRecords) { record in
-                            NavigationLink(value: movieVideo(from: record)) {
-                                ContinueWatchingCard(record: record)
-                            }
-                            #if os(iOS)
-                            .buttonStyle(VodCardPressStyle())
-                            #else
-                            .buttonStyle(.plain)
-                            #endif
-                            .contextMenu {
-                                Button(role: .destructive) {
-                                    HapticManager.shared.lightImpact()
-                                    removeRecord(record)
-                                } label: {
-                                    Label("从「继续观看」移除", systemImage: "trash")
-                                }
-                            }
-                        }
+                    if section.isLoading {
+                        ProgressView().controlSize(.small)
+                            .accessibilityLabel("正在加载\(section.title)")
+                    } else if section.errorMessage == nil {
+                        Text("暂无匹配内容").font(.caption).foregroundStyle(.secondary)
                     }
-                    .padding(.horizontal, 20)
+                    Button(action: more) {
+                        Label("查看全部", systemImage: "chevron.right")
+                            .font(.system(size: 12, weight: .medium))
+                            .frame(minHeight: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("查看全部\(section.title)")
                 }
+                .padding(.horizontal, 28)
+            }
+            if let error = section.errorMessage {
+                HStack {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("重试", action: retry).frame(minHeight: 44)
+                }
+                .padding(.horizontal, 28)
             }
         }
-    }
-
-    /// 从观看记录还原可导航的视频对象（与历史页同一规则）。
-    private func movieVideo(from item: VodRecord) -> Movie.Video {
-        Movie.Video(id: item.vodId, name: item.vodName, pic: item.vodPic, sourceKey: item.sourceKey)
-    }
-
-    /// 移除单条观看记录：只让它从首页「继续观看」消失。
-    /// 历史记录页中的同一条目仍保留，需要单独去历史页删除。
-    private func removeRecord(_ record: VodRecord) {
-        CacheStore.shared.hideFromContinueWatching(record)
     }
 }
 
-/// 「继续观看」卡片：横向封面 + 片名 + 上次看到的位置。
-struct ContinueWatchingCard: View {
-    let record: VodRecord
+
+struct HomeBrowseFilterBar: View {
+    let filters: [MovieSort.SortFilter]
+    let selections: [String: String]
+    let select: (String, String) -> Void
+    let clear: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ZStack {
-                CachedAsyncImage(url: URL.posterURL(from: record.vodPic)) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(2/3, contentMode: .fill)
-                } placeholder: {
-                    RoundedRectangle(cornerRadius: AppTheme.cardRadius)
-                        .fill(Color.white.opacity(0.05))
-                        .aspectRatio(2/3, contentMode: .fill)
-                        .overlay(
-                            Image(systemName: "film.fill")
-                                .font(.system(size: 26))
-                                .foregroundColor(.white.opacity(0.2))
-                        )
-                }
-                .frame(width: 110, height: 165)
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardRadius))
-                .overlay(alignment: .bottom) {
-                    // 底部渐变，保护进度文字可读性
-                    LinearGradient(
-                        colors: [.black.opacity(0.75), .clear],
-                        startPoint: .bottom,
-                        endPoint: .center
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.cardRadius))
-                }
-                .overlay(alignment: .bottomLeading) {
-                    if !record.playNote.isEmpty {
-                        Text(record.playNote)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.white)
-                            .lineLimit(1)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 3)
-                            .padding(.bottom, 6)
-                            .padding(.leading, 6)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(filters, id: \.key) { filter in
+                    let selected = selections[filter.key] ?? ""
+                    let label = filter.values.first { $0.v == selected }?.n ?? "全部"
+                    Menu {
+                        Picker(filter.name, selection: Binding(
+                            get: { selections[filter.key] ?? "" },
+                            set: { select(filter.key, $0) }
+                        )) {
+                            if !filter.values.contains(where: { $0.v.isEmpty }) {
+                                Text("全部").tag("")
+                            }
+                            ForEach(filter.values, id: \.v) { Text($0.n).tag($0.v) }
+                        }
+                    } label: {
+                        BrowseChip(title: "\(filter.name) · \(label)", icon: "line.3.horizontal.decrease", isSelected: !selected.isEmpty)
                     }
+                    .menuStyle(.borderlessButton)
+                    .accessibilityLabel("\(filter.name)：\(label)")
                 }
-                .overlay(alignment: .center) {
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 34))
-                        .foregroundColor(.white.opacity(0.85))
-                        .shadow(radius: 6)
+                if !selections.isEmpty {
+                    Button("重置", action: clear)
+                        .buttonStyle(.plain).foregroundStyle(.orange)
+                        .frame(minHeight: 44)
                 }
             }
-
-            Text(record.vodName)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.white)
-                .lineLimit(1)
-                .frame(width: 110, alignment: .leading)
+            .padding(.horizontal, 16)
         }
+        .padding(.vertical, 4)
+    }
+}
+
+
+struct HomeSubcategoryPicker: View {
+    let group: HomeCategoryGroup
+    let selectedID: String?
+    let select: (MovieSort.SortData) -> Void
+
+    var body: some View {
+        HStack {
+            Menu {
+                Picker("\(group.title)分类", selection: Binding(
+                    get: { selectedID ?? "" },
+                    set: { id in
+                        if let category = group.categories.first(where: { $0.id == id }) { select(category) }
+                    }
+                )) {
+                    ForEach(group.categories) { category in
+                        Text(category.name).tag(category.id)
+                    }
+                }
+            } label: {
+                let name = group.categories.first { $0.id == selectedID }?.name ?? "选择分类"
+                BrowseChip(title: "\(group.title)分类 · \(name)", icon: "square.grid.2x2", isSelected: true)
+            }
+            .menuStyle(.borderlessButton)
+            .accessibilityLabel("\(group.title)分类")
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 4)
     }
 }

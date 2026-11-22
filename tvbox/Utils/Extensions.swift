@@ -28,6 +28,75 @@ struct HawkConfig {
     static let HOME_REC_STYLE = "home_rec_style"
     static let HISTORY_NUM = "history_num"
     static let SEARCH_HISTORY = "search_history"
+    static let SPIDER_GATEWAY_URL = "spider_gateway_url"
+    static let SPIDER_GATEWAY_TOKEN = "spider_gateway_token"
+}
+
+/// 仅用于错误提示和日志展示，避免把 URL 中的凭据直接暴露给用户。
+enum SensitiveURLRedactor {
+    private static let sensitiveQueryNames: Set<String> = [
+        "accesskey", "accesstoken", "apikey", "auth", "authorization",
+        "code", "cookie", "credential", "key", "password", "passwd", "pwd",
+        "secret", "session", "sessionid", "sig", "sign", "signature", "ticket",
+        "token", "xamzcredential", "xamzsignature"
+    ]
+    private static let sensitiveQueryFragments = [
+        "auth", "cookie", "credential", "password", "secret", "session",
+        "signature", "token"
+    ]
+
+    static func redact(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let authorityRedacted = redactAuthority(in: trimmed)
+        guard var components = URLComponents(string: authorityRedacted) else {
+            return authorityRedacted
+        }
+
+        var changed = authorityRedacted != trimmed
+        if components.user != nil || components.password != nil {
+            components.user = nil
+            components.password = nil
+            changed = true
+        }
+        if let items = components.queryItems {
+            let redactedItems = items.map { item -> URLQueryItem in
+                let normalizedName = item.name
+                    .lowercased()
+                    .filter { $0.isLetter }
+                guard isSensitiveQueryName(normalizedName), item.value != nil else {
+                    return item
+                }
+                changed = true
+                return URLQueryItem(name: item.name, value: "REDACTED")
+            }
+            components.queryItems = redactedItems
+        }
+        if components.fragment != nil {
+            components.fragment = nil
+            changed = true
+        }
+        return changed ? (components.string ?? authorityRedacted) : trimmed
+    }
+
+    static func containsSensitiveData(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return redact(trimmed) != trimmed
+    }
+
+    private static func isSensitiveQueryName(_ normalizedName: String) -> Bool {
+        sensitiveQueryNames.contains(normalizedName)
+            || sensitiveQueryFragments.contains(where: normalizedName.contains)
+    }
+
+    private static func redactAuthority(in value: String) -> String {
+        guard let schemeRange = value.range(of: "://") else { return value }
+        let authorityStart = schemeRange.upperBound
+        let suffix = value[authorityStart...]
+        let authorityEnd = suffix.firstIndex(where: { "/?#".contains($0) }) ?? value.endIndex
+        let authority = value[authorityStart..<authorityEnd]
+        guard let atIndex = authority.lastIndex(of: "@") else { return value }
+        return String(value[..<authorityStart]) + String(value[value.index(after: atIndex)...])
+    }
 }
 
 /// 通用 Swift 扩展
@@ -94,9 +163,9 @@ extension Double {
 struct AppTheme {
     static let primaryGradient = LinearGradient(
         colors: [
-            Color(hex: "1a1a2e"),
-            Color(hex: "16213e"),
-            Color(hex: "0f3460")
+            Color("ThemeGradientStart"),
+            Color("ThemeGradientMiddle"),
+            Color("ThemeGradientEnd")
         ],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
@@ -108,7 +177,8 @@ struct AppTheme {
         endPoint: .trailing
     )
     
-    static let glassBackgroud = Color.white.opacity(0.1)
+    static let background = Color("ThemeBackground")
+    static let glassBackgroud = Color.primary.opacity(0.1)
     static let cardRadius: CGFloat = 16
     static let glassRadius: CGFloat = 20
 }
@@ -153,7 +223,7 @@ struct GlassBackground: ViewModifier {
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius)
-                    .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                    .stroke(Color.primary.opacity(0.15), lineWidth: 0.5)
             )
             .shadow(color: Color.black.opacity(0.3), radius: 10, x: 0, y: 5)
     }
@@ -192,12 +262,14 @@ extension URL {
         }
         
         guard let originalURL = URL(string: absolute),
+              ["http", "https"].contains(originalURL.scheme?.lowercased() ?? ""),
               let host = originalURL.host?.lowercased() else {
             return nil
         }
         
         // 部分源图片域名有防盗链，直接访问会 403，走代理兜底
-        if host == "img.picbf.com" {
+        if host == "img.picbf.com",
+           !SensitiveURLRedactor.containsSensitiveData(absolute) {
             var components = URLComponents(string: "https://images.weserv.nl/")
             components?.queryItems = [URLQueryItem(name: "url", value: absolute)]
             return components?.url
@@ -218,9 +290,6 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
     @ViewBuilder let placeholder: () -> Placeholder
     
     @State private var loadedImage: PlatformImage?
-    @State private var loadFailed = false
-    
-    private static var delayedRetryDelay: TimeInterval { 3.0 }
     
     init(
         url: URL?,
@@ -247,10 +316,8 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
         .task(id: url) {
             await loadImage()
         }
-        .onDisappear {
-            loadedImage = nil
-            loadFailed = false
-        }
+        // 不在 onDisappear 清空 loadedImage：列表滚动复用时会闪回占位图。
+        // 内存由 ImageCache(NSCache) 在压力下自动回收，@State 随视图身份释放。
     }
     
     private func loadImage() async {
@@ -269,17 +336,9 @@ struct CachedAsyncImage<Content: View, Placeholder: View>: View {
             guard !Task.isCancelled else { return }
             ImageCache.shared.set(image, for: url)
             loadedImage = image
-            loadFailed = false
         } catch {
             guard !Task.isCancelled else { return }
             loadedImage = nil
-            
-            if error.isNetworkConnectionError && !loadFailed {
-                loadFailed = true
-                try? await Task.sleep(nanoseconds: UInt64(Self.delayedRetryDelay * 1_000_000_000))
-                guard !Task.isCancelled else { return }
-                await loadImage()
-            }
         }
     }
 }
@@ -298,41 +357,121 @@ typealias PlatformImage = UIImage
 @MainActor
 final class ImageLoader {
     static let shared = ImageLoader()
+
+    private static let memoryCacheCapacity = 12 * 1024 * 1024
+    private static let diskCacheCapacity = 120 * 1024 * 1024
+    static let maximumImagePayloadBytes = 20 * 1024 * 1024
     
     private let session: URLSession
     private let urlCache: URLCache
     private let thumbnailMaxPixelSize: CGFloat = 420
     
-    private init() {
-        let config = URLSessionConfiguration.default
+    init(configuration: URLSessionConfiguration = .default) {
+        let config = (configuration.copy() as? URLSessionConfiguration) ?? configuration
         config.timeoutIntervalForRequest = 15
         config.timeoutIntervalForResource = 20
         config.httpMaximumConnectionsPerHost = 6
-        let cache = URLCache(
-            memoryCapacity: 12 * 1024 * 1024,
-            diskCapacity: 120 * 1024 * 1024,
-            diskPath: "image_cache"
-        )
+        let cache = Self.makeURLCache()
         config.urlCache = cache
         config.requestCachePolicy = .useProtocolCachePolicy
         self.urlCache = cache
         self.session = URLSession(configuration: config)
     }
+
+    static func imageCacheDirectory(fileManager: FileManager = .default) throws -> URL {
+        try fileManager.url(
+            for: .cachesDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        .appendingPathComponent("TVBox/ImageCache", isDirectory: true)
+    }
+
+    private static func makeURLCache(fileManager: FileManager = .default) -> URLCache {
+        do {
+            let directory = try imageCacheDirectory(fileManager: fileManager)
+            try fileManager.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+            return URLCache(
+                memoryCapacity: memoryCacheCapacity,
+                diskCapacity: diskCacheCapacity,
+                diskPath: directory.path
+            )
+        } catch {
+            return URLCache(
+                memoryCapacity: memoryCacheCapacity,
+                diskCapacity: 0,
+                diskPath: nil
+            )
+        }
+    }
     
     private static let maxImageRetries = 1
     private static let imageRetryDelay: TimeInterval = 1.0
     
-    func load(url: URL) async throws -> PlatformImage {
-        var request = URLRequest(url: url)
+    /// CatVod may return a desktop client's virtual imageProxy URL. Fetch its
+    /// original image ourselves instead of depending on that client's listener.
+    static func makeImageRequest(url: URL) throws -> URLRequest {
+        guard ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else {
+            throw ImageLoadError.invalidURL
+        }
+        var imageURL = url
+        var sourceHeaders: [String: String] = [:]
+        let host = url.host?.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if url.path == "/imageProxy", ["localhost", "127.0.0.1", "::1"].contains(host ?? "") {
+            guard url.user == nil, url.password == nil,
+                  let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let items = components.queryItems, items.count <= 16,
+                  items.filter({ $0.name == "url" }).count == 1,
+                  items.filter({ $0.name == "customHeaders" }).count <= 1,
+                  let address = items.first(where: { $0.name == "url" })?.value,
+                  address.utf8.count <= 8192, let target = URL(string: address),
+                  ["http", "https"].contains(target.scheme?.lowercased() ?? ""),
+                  target.host != nil else { throw ImageLoadError.invalidURL }
+            let targetHost = target.host?.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            guard !(target.path == "/imageProxy" && ["localhost", "127.0.0.1", "::1"].contains(targetHost ?? "")) else {
+                throw ImageLoadError.invalidURL
+            }
+            imageURL = target
+            if let rawHeaders = items.first(where: { $0.name == "customHeaders" })?.value {
+                guard rawHeaders.utf8.count <= 32_768,
+                      let data = rawHeaders.data(using: .utf8),
+                      let headers = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
+                    throw ImageLoadError.invalidURL
+                }
+                sourceHeaders = SourceSubtitleParser.safeHeaders(headers)
+            }
+        }
+        let prepared: (url: URL, authorization: String?)
+        do {
+            prepared = try NetworkManager.prepareURL(from: imageURL.absoluteString)
+        } catch {
+            throw ImageLoadError.invalidURL
+        }
+        var request = URLRequest(url: prepared.url)
         request.httpMethod = "GET"
         request.setValue(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             forHTTPHeaderField: "User-Agent"
         )
-        if let host = url.host {
+        if let host = prepared.url.host {
             request.setValue("https://\(host)/", forHTTPHeaderField: "Referer")
         }
-        
+        for (name, value) in sourceHeaders {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        if let authorization = prepared.authorization {
+            request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        }
+        return request
+    }
+
+    func load(url: URL) async throws -> PlatformImage {
+        let request = try Self.makeImageRequest(url: url)
         var lastError: Error = ImageLoadError.invalidData
         let totalAttempts = Self.maxImageRetries + 1
         
@@ -340,7 +479,23 @@ final class ImageLoader {
             do {
                 try Task.checkCancellation()
                 
-                let (data, response) = try await session.data(for: request)
+                let requestDelegate = ProtectedRequestDelegate(
+                    originalURL: request.url,
+                    maximumResponseBytes: Self.maximumImagePayloadBytes
+                )
+                let data: Data
+                let response: URLResponse
+                do {
+                    (data, response) = try await session.data(
+                        for: request,
+                        delegate: requestDelegate
+                    )
+                } catch {
+                    if requestDelegate.didRejectOversizedResponse {
+                        throw ImageLoadError.responseTooLarge
+                    }
+                    throw error
+                }
                 
                 if let httpResponse = response as? HTTPURLResponse,
                    !(200...299).contains(httpResponse.statusCode) {
@@ -353,9 +508,17 @@ final class ImageLoader {
                     }
                     throw error
                 }
+
+                try Self.validateImagePayload(
+                    expectedContentLength: response.expectedContentLength,
+                    actualByteCount: data.count
+                )
                 
                 let maxPixelSize = thumbnailMaxPixelSize
-                guard let image = Self.decodeImage(data: data, maxPixelSize: maxPixelSize) else {
+                guard let image = try await Self.decodeImage(
+                    data: data,
+                    maxPixelSize: maxPixelSize
+                ) else {
                     throw ImageLoadError.invalidData
                 }
                 
@@ -386,34 +549,70 @@ final class ImageLoader {
     func clearCache() {
         urlCache.removeAllCachedResponses()
     }
-    
-    private static func decodeImage(data: Data, maxPixelSize: CGFloat) -> PlatformImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-            return PlatformImage(data: data)
+
+    static func validateImagePayload(
+        expectedContentLength: Int64,
+        actualByteCount: Int
+    ) throws {
+        if expectedContentLength > Int64(maximumImagePayloadBytes)
+            || actualByteCount > maximumImagePayloadBytes {
+            throw ImageLoadError.responseTooLarge
         }
-        
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: max(1, Int(maxPixelSize.rounded(.up))),
-            kCGImageSourceShouldCacheImmediately: true
-        ]
-        
-        if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+    }
+    
+    private static func decodeImage(
+        data: Data,
+        maxPixelSize: CGFloat
+    ) async throws -> PlatformImage? {
+        let decodeTask = Task.detached(priority: .utility) { () -> SendableCGImage? in
+            guard !Task.isCancelled,
+                  let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+                return nil
+            }
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: max(1, Int(maxPixelSize.rounded(.up))),
+                kCGImageSourceShouldCacheImmediately: true
+            ]
+            guard !Task.isCancelled,
+                  let image = CGImageSourceCreateThumbnailAtIndex(
+                    source,
+                    0,
+                    options as CFDictionary
+                  ) else {
+                return nil
+            }
+            return SendableCGImage(value: image)
+        }
+        let decoded = await withTaskCancellationHandler {
+            await decodeTask.value
+        } onCancel: {
+            decodeTask.cancel()
+        }
+        try Task.checkCancellation()
+
+        if let cgImage = decoded?.value {
             #if os(macOS)
             return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
             #else
             return UIImage(cgImage: cgImage)
             #endif
         }
-        
+
         return PlatformImage(data: data)
     }
 }
 
+private struct SendableCGImage: @unchecked Sendable {
+    let value: CGImage
+}
+
 enum ImageLoadError: Error {
+    case invalidURL
     case httpError(Int)
     case invalidData
+    case responseTooLarge
 }
 
 // MARK: - Image Memory Cache
@@ -508,14 +707,14 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
                         // 主图标
                         Image(systemName: icon)
                             .font(.system(size: 26, weight: .bold))
-                            .foregroundColor(.white)
+                            .foregroundColor(.primary)
                             .frame(width: 64, height: 64)
                             .background(
                                 RoundedRectangle(cornerRadius: 18)
-                                    .fill(Color.white.opacity(0.12))
+                                    .fill(Color.primary.opacity(0.12))
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 18)
-                                            .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
+                                            .stroke(Color.primary.opacity(0.2), lineWidth: 0.5)
                                     )
                             )
                             .shadow(color: Color.black.opacity(0.25), radius: 8, x: 0, y: 4)
@@ -524,7 +723,7 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
                     
                     Text(title)
                         .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
+                        .foregroundColor(.primary)
                 }
                 .padding(.bottom, 24)
                 
@@ -540,7 +739,7 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
                                 HStack(spacing: 16) {
                                     Text(itemTitle(item))
                                         .font(.system(size: 15, weight: item == selectedItem ? .semibold : .medium))
-                                        .foregroundColor(item == selectedItem ? .white : .white.opacity(0.7))
+                                        .foregroundColor(item == selectedItem ? .primary : .secondary)
                                     
                                     Spacer()
                                     
@@ -551,7 +750,7 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
                                             .shadow(color: Color.orange.opacity(0.4), radius: 4)
                                     } else {
                                         Circle()
-                                            .strokeBorder(Color.white.opacity(0.15), lineWidth: 1.5)
+                                            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1.5)
                                             .frame(width: 18, height: 18)
                                     }
                                 }
@@ -581,7 +780,7 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
                 .frame(maxHeight: 320)
                 
                 Divider()
-                    .background(Color.white.opacity(0.1))
+                    .background(Color.primary.opacity(0.1))
                     .padding(.horizontal, 24)
                 
                 // 取消按钮
@@ -595,7 +794,7 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
                 } label: {
                     Text("取消")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.5))
+                        .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
                 }
@@ -619,9 +818,9 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
         if item == selectedItem {
             return Color.orange.opacity(0.2)
         } else if item.id == hoverItemId {
-            return Color.white.opacity(0.1)
+            return Color.primary.opacity(0.1)
         } else {
-            return Color.white.opacity(0.04)
+            return Color.primary.opacity(0.04)
         }
     }
     
@@ -629,7 +828,7 @@ struct SelectionModal<Item: Identifiable & Equatable>: View {
         if item == selectedItem {
             return Color.orange.opacity(0.6)
         } else if item.id == hoverItemId {
-            return Color.white.opacity(0.2)
+            return Color.primary.opacity(0.2)
         } else {
             return Color.clear
         }

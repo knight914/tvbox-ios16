@@ -26,10 +26,6 @@ struct PlayerGestureLayer: View {
     // MARK: - Properties
     let currentTime: Double
     let duration: Double
-    /// 是否处于全屏播放器。决定双击语义：非全屏 = 进入全屏；全屏 = 播放/暂停。
-    var isFullScreenPresentation: Bool = false
-    /// 非全屏状态下双击进入全屏的回调。
-    var onEnterFullScreen: (() -> Void)? = nil
 
     // MARK: - State
     @State private var gestureMode: PlayerGestureMode = .none
@@ -108,13 +104,7 @@ struct PlayerGestureLayer: View {
                 .gesture(pinchGesture)
                 .onTapGesture(count: 2) {
                     HapticManager.shared.lightImpact()
-                    if !isFullScreenPresentation, let enter = onEnterFullScreen {
-                        // 竖屏小窗：双击进入全屏（主流影视 App 交互）。
-                        enter()
-                    } else {
-                        // 全屏状态：双击播放/暂停。
-                        onTogglePlayPause()
-                    }
+                    onTogglePlayPause()
                 }
                 .onTapGesture(count: 1) {
                     onToggleControls()
@@ -171,11 +161,9 @@ struct PlayerGestureLayer: View {
     // MARK: - Pinch Gesture
 
     private var pinchGesture: some Gesture {
-        // iOS 16 使用 MagnificationGesture（其 Value 为 CGFloat 缩放系数），
-        // iOS 17 的 MagnifyGesture 需要 `value.magnification`，此处按旧签名取值。
-        MagnificationGesture()
+        MagnifyGesture()
             .onChanged { value in
-                let newScale = Self.clampZoom(scale: value * zoomScale)
+                let newScale = Self.clampZoom(scale: value.magnification * zoomScale)
                 onZoomChanged(newScale)
                 gestureMode = .none
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -183,7 +171,7 @@ struct PlayerGestureLayer: View {
                 }
             }
             .onEnded { value in
-                let finalScale = Self.clampZoom(scale: value * zoomScale)
+                let finalScale = Self.clampZoom(scale: value.magnification * zoomScale)
                 if finalScale < 1.0 {
                     zoomScale = 1.0
                 } else {

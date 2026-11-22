@@ -7,6 +7,9 @@ struct MovieSort: Codable {
     
     /// 单个分类数据
     struct SortData: Codable, Identifiable, Hashable {
+        /// App 内部使用的推荐分类 ID，避免与上游真实分类（例如 CatVod 的 `home`）冲突。
+        static let recommendationID = "__tvbox_recommendation__"
+
         /// 分类唯一标识（接口字段通常为 type_id）。
         var id: String
         /// 分类显示名。
@@ -25,8 +28,10 @@ struct MovieSort: Codable {
         /// 生成首页推荐占位分类。
         /// 该分类不走常规分类接口，直接渲染首页推荐列表。
         static func home() -> SortData {
-            SortData(id: "home", name: "推荐", flag: "1")
+            SortData(id: recommendationID, name: "推荐", flag: "1")
         }
+
+        var isRecommendation: Bool { id == Self.recommendationID }
     }
     
     /// 筛选条件

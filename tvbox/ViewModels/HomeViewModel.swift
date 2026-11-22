@@ -2,14 +2,28 @@ import Foundation
 import SwiftUI
 import Combine
 
-/// 推荐页的横向内容分区（每个分区对应一个分类的第一页数据）。
-struct HomeRecommendSection: Identifiable {
-    /// 分区对应的分类。
+struct HomeRecommendationSection: Identifiable, Codable {
     let sort: MovieSort.SortData
-    /// 分区内的视频列表。
+    var filters: [String: String]
+    var contributingSorts: [MovieSort.SortData] = []
     var videos: [Movie.Video] = []
-    /// 稳定标识。
+    var isLoading = true
+    var errorMessage: String?
     var id: String { sort.id }
+    var isMixed: Bool { !contributingSorts.isEmpty }
+    var isPopular: Bool {
+        guard !isMixed else { return false }
+        let popular = HomeViewModel.popularFilters(for: sort)
+        return !popular.isEmpty && popular.allSatisfy { filters[$0.key] == $0.value }
+    }
+    var title: String {
+        let name = HomeViewModel.recommendationFamilyName(for: sort.name) ?? sort.name
+        return isPopular ? "热门\(name)" : "\(name)推荐"
+    }
+    var subtitle: String {
+        if isMixed { return contributingSorts.map(\.name).joined(separator: " · ") + " · 分类混合推荐" }
+        return "\(sort.name) · " + (isPopular ? "按当前来源提供的热度排序" : "来自当前来源的分类内容")
+    }
 }
 
 /// 首页 ViewModel
@@ -19,10 +33,19 @@ class HomeViewModel: ObservableObject {
     @Published var sorts: [MovieSort.SortData] = []
     /// 当前选中的分类。
     @Published var selectedSort: MovieSort.SortData?
+    var categoryGroups: [HomeCategoryGroup] { HomeCategoryGroup.groups(from: sorts) }
+    var selectedCategoryGroup: HomeCategoryGroup? {
+        categoryGroups.first { group in group.categories.contains { $0.id == selectedSort?.id } }
+    }
+
+    @discardableResult
+    func selectCategoryGroup(_ group: HomeCategoryGroup) -> Task<Void, Never>? {
+        guard selectedCategoryGroup?.id != group.id, let category = group.defaultCategory else { return nil }
+        return selectSort(category)
+    }
+
     /// 首页推荐内容（对应"推荐"分类）。
     @Published var homeVideos: [Movie.Video] = []
-    /// 推荐页分区（热门电影/剧集/综艺/动漫等横向内容行）。
-    @Published var recommendSections: [HomeRecommendSection] = []
     /// 普通分类的视频列表（分页加载）。
     @Published var categoryVideos: [Movie.Video] = []
     /// 页面加载状态（分类加载与分页共用）。
@@ -33,45 +56,604 @@ class HomeViewModel: ObservableObject {
     @Published var hasMore = true
     /// 错误提示文案。
     @Published var errorMessage: String?
+    @Published private(set) var selectedFilters: [String: String] = [:]
+    @Published private(set) var recommendationSections: [HomeRecommendationSection] = []
+    @Published private(set) var isLoadingRecommendations = false
+    @Published private(set) var recommendationFilters: [String: String] = [:]
+    @Published private(set) var sourceRecoveryMessage: String?
+    private var lastSuccessfulSource: SourceBean?
+    private var unavailableSource: SourceBean?
+    var activeFilters: [String: String] {
+        selectedSort?.isRecommendation == true ? recommendationFilters : selectedFilters
+    }
+    var filteredHomeVideos: [Movie.Video] {
+        HomeBrowseFacet.matching(homeVideos, selections: recommendationFilters)
+    }
+    var visibleRecommendationSections: [HomeRecommendationSection] {
+        recommendationSections.map { section in
+            var section = section
+            if !section.isMixed {
+                section.videos = HomeBrowseFacet.matching(section.videos, selections: localRecommendationFilters(for: section.sort))
+            }
+            return section
+        }
+    }
+    var displayedVideos: [Movie.Video] {
+        selectedSort?.isRecommendation == true
+            ? Self.uniqueVideos(filteredHomeVideos + visibleRecommendationSections.flatMap(\.videos))
+            : HomeBrowseFacet.matching(categoryVideos, selections: localCategoryFilters)
+    }
+    var browseFilters: [MovieSort.SortFilter] {
+        if selectedSort?.isRecommendation == true {
+            let videos = homeVideos + recommendationSections.flatMap(\.videos)
+            return HomeBrowseFacet.allCases
+                .map { $0.filter(sorts: sorts, videos: videos, selected: recommendationFilters[$0.rawValue]) }
+                .filter { !$0.values.isEmpty }
+        }
+        guard let sort = selectedSort else { return [] }
+        var filters = sort.filters
+        for facet in HomeBrowseFacet.allCases {
+            if let value = selectedFilters[facet.rawValue],
+               !sort.filters.contains(where: { facet.recognizes($0) && $0.key == facet.rawValue && $0.values.contains(where: { $0.v == value }) }) {
+                filters.removeAll(where: facet.recognizes)
+            }
+            if !filters.contains(where: facet.recognizes) {
+                // 分类未声明该 facet 时，仅从本分类已加载影片合成（不并入全站声明值，
+                // 否则会把其它分类的选项泄漏进来，导致服务端筛选参数错配）。
+                let synthesized = facet.filter(sorts: [], videos: categoryVideos, selected: selectedFilters[facet.rawValue])
+                if !synthesized.values.isEmpty {
+                    filters.append(synthesized)
+                }
+            }
+        }
+        return filters
+    }
+    private var localCategoryFilters: [String: String] {
+        guard let sort = selectedSort else { return [:] }
+        var local: [String: String] = [:]
+        for facet in HomeBrowseFacet.allCases {
+            if let value = selectedFilters[facet.rawValue],
+               !sort.filters.contains(where: { facet.recognizes($0) && $0.key == facet.rawValue && $0.values.contains(where: { $0.v == value }) }) {
+                local[facet.rawValue] = value
+            } else if let declared = sort.filters.first(where: facet.recognizes) {
+                if currentSource()?.type == 0, let value = selectedFilters[declared.key],
+                   let option = declared.values.first(where: { $0.v == value }) {
+                    local[facet.rawValue] = facet.normalized(option.n)
+                }
+            } else if let value = selectedFilters[facet.rawValue] {
+                local[facet.rawValue] = value
+            }
+        }
+        return local
+    }
+    private func localRecommendationFilters(for sort: MovieSort.SortData) -> [String: String] {
+        recommendationFilters.filter { key, value in
+            guard let facet = HomeBrowseFacet(rawValue: key) else { return false }
+            return currentSource()?.type == 0 || facet.sourceSelection(in: sort, value: value) == nil
+        }
+    }
+    private func recommendationSourceFilters(for sort: MovieSort.SortData) -> [String: String] {
+        guard currentSource()?.type != 0 else { return [:] }
+        var filters = Self.popularFilters(for: sort)
+        for facet in HomeBrowseFacet.allCases {
+            if let value = recommendationFilters[facet.rawValue], let selection = facet.sourceSelection(in: sort, value: value) {
+                filters[selection.key] = selection.value
+            }
+        }
+        return filters
+    }
+    typealias SortLoader = @MainActor (SourceBean) async throws -> (sorts: [MovieSort.SortData], homeVideos: [Movie.Video])
+    typealias ListLoader = @MainActor (SourceBean, MovieSort.SortData, Int, [String: String]) async throws -> [Movie.Video]
+    private let sortLoader: SortLoader
+    private let listLoader: ListLoader
+    private let currentSource: @MainActor () -> SourceBean?
+    private let fallbackSources: @MainActor () -> [SourceBean]
+    private let selectHomeSource: @MainActor (SourceBean) -> Void
+    @Published private(set) var isLoadingHome = false
+    @Published private(set) var homeLoadMessage: String?
+    private var homeBudget: HomeLoadBudget?
+    private let homeBudgetSeconds: Double
+    private let homeRequestSeconds: Double
+    private let snapshotStore: HomeSnapshotStore
+    private var loadedSource: SourceBean?
+    private var homeRequestID = UUID()
+    private var recommendationRequestID = UUID()
+    private var refreshRequestID = UUID()
     
-    /// 源数据访问服务。
-    private let sourceService = SourceService.shared
     /// 标记上次加载是否因网络错误失败（用于网络恢复自动重试）。
     private var lastLoadFailedDueToNetwork = false
     private var networkRestoredCancellable: AnyCancellable?
+    /// 当前分类请求。切换分类时主动取消，避免旧请求占用连接或覆盖新状态。
+    private var categoryLoadTask: Task<Void, Never>?
+    /// 分类请求代次。即使上游忽略取消，也只有最新一代可以回写界面。
+    private var categoryRequestID = UUID()
     
-    init() {
+    init(
+        currentSource: @escaping @MainActor () -> SourceBean? = { ApiConfig.shared.homeSourceBean },
+        fallbackSources: @escaping @MainActor () -> [SourceBean] = { ApiConfig.shared.sourceBeanList.filter { $0.isHomeEligible } },
+        selectHomeSource: @escaping @MainActor (SourceBean) -> Void = { ApiConfig.shared.setHomeSource($0) },
+        sortLoader: @escaping SortLoader = { try await SourceService.shared.getSort(sourceBean: $0, maxRetries: 0) },
+        homeBudgetSeconds: Double = 20,
+        homeRequestSeconds: Double = 6,
+        snapshotStore: HomeSnapshotStore? = nil,
+        listLoader: @escaping ListLoader = { source, sort, page, filters in
+            try await SourceService.shared.getList(sourceBean: source, sortData: sort, page: page, filters: filters)
+        }
+    ) {
+        self.homeBudgetSeconds = homeBudgetSeconds
+        self.homeRequestSeconds = homeRequestSeconds
+        self.snapshotStore = snapshotStore ?? HomeSnapshotStore()
+        self.currentSource = currentSource
+        self.fallbackSources = fallbackSources
+        self.selectHomeSource = selectHomeSource
+        self.sortLoader = sortLoader
+        self.listLoader = listLoader
         setupNetworkRestoredAutoRetry()
     }
     
+    private func beginHomeLoad() -> HomeLoadBudget {
+        homeBudget?.cancel()
+        let budget = HomeLoadBudget(seconds: homeBudgetSeconds, requestSeconds: homeRequestSeconds)
+        homeBudget = budget
+        isLoadingHome = true
+        homeLoadMessage = nil
+        return budget
+    }
+
+    private func finishHomeLoad(_ budget: HomeLoadBudget) {
+        guard homeBudget === budget else { return }
+        if budget.isExpired {
+            homeLoadMessage = "本次加载等待过久，已停止自动尝试。可刷新重试或切换来源。"
+            sourceRecoveryMessage = nil
+        } else if homeLoadMessage == "正在显示上次内容，后台更新中…" {
+            homeLoadMessage = nil
+        }
+        budget.cancel()
+        homeBudget = nil
+        isLoadingHome = false
+        isLoadingRecommendations = false
+        if categoryLoadTask == nil { isLoading = false }
+    }
+
+    func stopHomeLoading() {
+        homeBudget?.cancel()
+        homeBudget = nil
+        homeRequestID = UUID()
+        recommendationRequestID = UUID()
+        refreshRequestID = UUID()
+        isLoadingHome = false
+        isLoadingRecommendations = false
+        if categoryLoadTask == nil { isLoading = false }
+        for index in recommendationSections.indices { recommendationSections[index].isLoading = false }
+        sourceRecoveryMessage = nil
+        homeLoadMessage = "已停止加载，已加载的内容仍可浏览"
+    }
+
+    /// Sequential category samples keep the existing three-section concurrency limit.
+    private func mixedMoviePreview(_ plan: HomeRecommendationSection, source: SourceBean, budget: HomeLoadBudget) async -> HomeRecommendationSection {
+        var section = plan
+        var samples: [[Movie.Video]] = []
+        for sort in plan.contributingSorts {
+            guard !budget.isFinished, !Task.isCancelled, currentSource() == source else { break }
+            do {
+                let preview = try await categoryPreview(source: source, sort: sort,
+                    filters: recommendationSourceFilters(for: sort), budget: budget)
+                if sort.id == plan.sort.id { section.filters = preview.filters }
+                let videos = HomeBrowseFacet.matching(preview.videos, selections: localRecommendationFilters(for: sort))
+                samples.append(Self.uniqueVideos(videos))
+            } catch {
+                section.errorMessage = "部分分类未能加载，可刷新重试"
+            }
+        }
+        // Round-robin makes every populated category visible before taking more from one.
+        var videos: [Movie.Video] = []
+        var seen = Set<String>()
+        for index in 0..<(samples.map(\.count).max() ?? 0) {
+            for sample in samples where sample.indices.contains(index) {
+                let video = sample[index]
+                if seen.insert(video.id).inserted { videos.append(video) }
+            }
+            if videos.count >= 24 { break }
+        }
+        section.videos = Array(videos.prefix(24))
+        section.isLoading = false
+        return section
+    }
+
+    /// 保留普通页面返回时的选择；设置页更换来源后必须重新加载分类。
+    func refreshIfNeeded() async {
+        guard sorts.isEmpty || loadedSource != currentSource() else { return }
+        await refresh()
+    }
+
     /// 加载分类列表
     func loadSorts() async {
-        guard let source = ApiConfig.shared.homeSourceBean else { return }
+        let budget = beginHomeLoad()
+        defer { finishHomeLoad(budget) }
+        let requestID = UUID()
+        homeRequestID = requestID
+        recommendationRequestID = UUID()
+        isLoadingRecommendations = false
+        sourceRecoveryMessage = nil
+        unavailableSource = nil
+        guard let source = currentSource() else {
+            sorts = []
+            selectedSort = nil
+            homeVideos = []
+            recommendationSections = []
+            recommendationFilters = [:]
+            selectedFilters = [:]
+            isLoading = false
+            errorMessage = "请先在设置中配置首页来源"
+            return
+        }
+        if loadedSource != source {
+            if loadedSource != nil { selectedSort = .home() }
+            selectedFilters = [:]
+            recommendationFilters = [:]
+            homeVideos = []
+            recommendationSections = []
+            sorts = []
+        }
+        if homeVideos.isEmpty, recommendationSections.isEmpty, let cached = snapshotStore.snapshot(for: source) {
+            sorts = cached.sorts
+            homeVideos = cached.videos
+            recommendationSections = cached.sections
+            loadedSource = source
+            selectedSort = .home()
+            homeLoadMessage = "正在显示上次内容，后台更新中…"
+        }
+        if selectedSort == nil { selectedSort = .home() }
         isLoading = true
+        defer { if homeRequestID == requestID, categoryLoadTask == nil { isLoading = false } }
         errorMessage = nil
         
         do {
-            let result = try await sourceService.getSort(sourceBean: source)
-            
-            // 插入本地"推荐"分类，保持 UI 与 Android 版本习惯一致。
-            var allSorts = [MovieSort.SortData.home()]
-            allSorts.append(contentsOf: result.sorts)
-            
-            self.sorts = allSorts
-            self.homeVideos = result.homeVideos
-            lastLoadFailedDueToNetwork = false
-            
-            if selectedSort == nil {
-                selectedSort = allSorts.first
+            // 首页存在多个同类影视源；首轮失败时立即切换，避免在失效域名上重复等待。
+            let result = try await budget.run { try await self.sortLoader(source) }
+            guard homeRequestID == requestID, currentSource() == source, !Task.isCancelled else { return }
+            guard !result.sorts.isEmpty || !result.homeVideos.isEmpty else {
+                throw SourceError.parseError("接口没有返回分类或影片")
             }
+            applySortResult(result, source: source)
+            lastLoadFailedDueToNetwork = false
         } catch {
-            errorMessage = error.localizedDescription
-            lastLoadFailedDueToNetwork = error.isNetworkConnectionError
+            guard homeRequestID == requestID, currentSource() == source, !Task.isCancelled else { return }
+            if budget.isFinished { return }
+            if !displayedVideos.isEmpty {
+                homeLoadMessage = "暂时无法更新，已保留上次内容，可稍后刷新"
+                return
+            }
+            await recoverUnavailableSource(source, homeRequest: requestID, reason: error.localizedDescription, budget: budget)
+            lastLoadFailedDueToNetwork = errorMessage != nil && error.isNetworkConnectionError
+            return
         }
         
         isLoading = false
+        if errorMessage == nil, selectedSort?.isRecommendation == true { await loadRecommendations(budget: budget) }
     }
-    
+
+    private func applySortResult(
+        _ result: (sorts: [MovieSort.SortData], homeVideos: [Movie.Video]),
+        source: SourceBean
+    ) {
+        // 上游没有首页影片时，从分类补充内容，仍可进入推荐页。
+        var allSorts = [MovieSort.SortData.home()]
+        allSorts.append(contentsOf: result.sorts.filter { !$0.isRecommendation })
+
+        sorts = allSorts
+        if loadedSource != source || !result.homeVideos.isEmpty {
+            homeVideos = Self.uniqueVideos(result.homeVideos)
+        }
+        if loadedSource != source { recommendationSections = [] }
+        errorMessage = nil
+
+        // 切源后尽量保留同名分类；若新源不存在该分类，则进入首个可用分类。
+        selectedSort = Self.preferredSort(previous: selectedSort, available: allSorts, sameSource: loadedSource == source)
+        if loadedSource != source {
+            selectedFilters = [:]
+            recommendationFilters = [:]
+        }
+        selectedFilters = selectedFilters.filter { key, value in
+            browseFilters.contains { $0.key == key && $0.values.contains { $0.v == value } }
+        }
+        loadedSource = source
+    }
+
+    /// 只使用上游明确声明的热度筛选，不向不支持的接口猜测参数。
+    nonisolated static func popularFilters(for sort: MovieSort.SortData) -> [String: String] {
+        for filter in sort.filters where ["by", "sort", "order", "orderby"].contains(filter.key.lowercased()) || filter.name.contains("排序") {
+            if let hot = filter.values.first(where: { value in
+                !value.v.isEmpty && (["热门", "热度", "人气", "点击", "播放", "最热"].contains { value.n.contains($0) }
+                    || ["hits", "hits_day", "hits_week", "hits_month", "hot", "popularity"].contains(value.v.lowercased()))
+            }) { return [filter.key: hot.v] }
+        }
+        return [:]
+    }
+
+    nonisolated static func recommendationFamilyName(for name: String) -> String? {
+        HomeCategoryGroup.Family.matching(name)?.title
+    }
+
+    static func recommendationCategories(from sorts: [MovieSort.SortData]) -> [MovieSort.SortData] {
+        Array(orderedRecommendationCategories(from: sorts).prefix(4))
+    }
+
+    /// 主分区未覆盖的剩余分类聚合为"其他"混合推荐时使用的合成分类 ID。
+    static let othersSectionID = "__tvbox_home_others__"
+
+    private static func orderedRecommendationCategories(from sorts: [MovieSort.SortData]) -> [MovieSort.SortData] {
+        var seen = Set<String>()
+        let categories = sorts.filter { !$0.isRecommendation && seen.insert($0.id).inserted }
+        // 电影优先；来源只提供叶子分类时也能识别动作片、喜剧片等电影内容。
+        var selected: [MovieSort.SortData] = []
+        for family in ["电影", "电视剧", "动漫", "综艺"] {
+            let candidates = categories.filter { recommendationFamilyName(for: $0.name) == family }
+            let match = candidates.first { [family, "连续剧", "动画", "影片"].contains($0.name) } ?? candidates.first
+            if let match { selected.append(match) }
+        }
+        selected.append(contentsOf: categories.filter { category in !selected.contains { $0.id == category.id } })
+        return selected
+    }
+
+    /// 每次最多三路分类请求；小分页额外补一页，总量有界且不执行播放/网盘转存。
+    func loadRecommendations(budget suppliedBudget: HomeLoadBudget? = nil) async {
+        guard let source = currentSource(), loadedSource == source else { return }
+        let budget = suppliedBudget ?? beginHomeLoad()
+        defer { if suppliedBudget == nil { finishHomeLoad(budget) } }
+        let requestID = UUID()
+        recommendationRequestID = requestID
+        let movieLeaves = sorts.filter { Self.recommendationFamilyName(for: $0.name) == "电影" }
+        let hasMovieRoot = movieLeaves.contains { ["电影", "电影片", "電影", "影片"].contains($0.name) }
+        var mixedMoviePlanned = false
+        var plans = Self.recommendationCategories(from: sorts).compactMap { sort -> HomeRecommendationSection? in
+            var section = HomeRecommendationSection(sort: sort, filters: recommendationSourceFilters(for: sort))
+            if !hasMovieRoot, movieLeaves.count > 1, Self.recommendationFamilyName(for: sort.name) == "电影" {
+                guard !mixedMoviePlanned else { return nil }
+                mixedMoviePlanned = true
+                section.contributingSorts = Array(movieLeaves.prefix(3))
+            }
+            return section
+        }
+        // 主分区未覆盖的分类（纪录片、短剧、解说等）最多取三类聚合为"其他"，保持首页请求有界。
+        let usedIDs = Set(plans.flatMap { $0.isMixed ? $0.contributingSorts.map(\.id) : [$0.sort.id] })
+        var leftover = Self.orderedRecommendationCategories(from: sorts).filter { !usedIDs.contains($0.id) }
+        if mixedMoviePlanned {
+            leftover.removeAll { Self.recommendationFamilyName(for: $0.name) == "电影" }
+        }
+        if !leftover.isEmpty {
+            var others = HomeRecommendationSection(sort: .init(id: Self.othersSectionID, name: "其他"), filters: [:])
+            others.contributingSorts = Array(leftover.prefix(3))
+            plans.append(others)
+        }
+        let previousSections = recommendationSections
+        recommendationSections = plans.map { plan in
+            var plan = plan
+            if let previous = previousSections.first(where: { $0.id == plan.id && $0.filters == plan.filters }) {
+                plan.videos = previous.videos
+            }
+            return plan
+        }
+        isLoadingRecommendations = !plans.isEmpty
+        defer {
+            if recommendationRequestID == requestID { isLoadingRecommendations = false }
+        }
+        let loader = listLoader
+        await withTaskGroup(of: HomeRecommendationSection.self) { group in
+            var iterator = plans.makeIterator()
+            func enqueue(_ plan: HomeRecommendationSection) {
+                group.addTask { @MainActor in
+                    var section = plan
+                    do {
+                        try Task.checkCancellation()
+                        if plan.isMixed {
+                            section = await self.mixedMoviePreview(plan, source: source, budget: budget)
+                            return section
+                        }
+                        let preview = try await self.categoryPreview(source: source, sort: plan.sort, filters: plan.filters, budget: budget)
+                        section.filters = preview.filters
+                        section.videos = Self.uniqueVideos(preview.videos)
+                        if !section.videos.isEmpty, section.videos.count < 12 {
+                            do {
+                                try Task.checkCancellation()
+                                guard self.recommendationRequestID == requestID, self.currentSource() == source else {
+                                    throw CancellationError()
+                                }
+                                let pageFilters = section.filters
+                                let more = try await budget.run { try await loader(source, plan.sort, 2, pageFilters) }
+                                section.videos = Self.uniqueVideos(section.videos + more)
+                            } catch is CancellationError { throw CancellationError() }
+                            catch { section.errorMessage = "部分内容未能加载，可重试或进入分类查看更多" }
+                        }
+                        section.videos = Array(section.videos.prefix(24))
+                    } catch is CancellationError {
+                        section.errorMessage = "加载已取消，请重试"
+                    } catch {
+                        section.errorMessage = "暂时无法加载，请重试或切换来源"
+                    }
+                    section.isLoading = false
+                    return section
+                }
+            }
+            for _ in 0..<3 { if let plan = iterator.next() { enqueue(plan) } }
+            for await loadedSection in group {
+                var section = loadedSection
+                guard recommendationRequestID == requestID, currentSource() == source, !Task.isCancelled else {
+                    group.cancelAll()
+                    break
+                }
+                if let index = recommendationSections.firstIndex(where: { $0.id == section.id }) {
+                    if section.videos.isEmpty, section.errorMessage != nil {
+                        section.videos = recommendationSections[index].videos
+                    }
+                    recommendationSections[index] = section
+                }
+                if let plan = iterator.next() { enqueue(plan) }
+            }
+        }
+        guard recommendationRequestID == requestID else { return }
+        for index in recommendationSections.indices where recommendationSections[index].isLoading {
+            recommendationSections[index].isLoading = false
+            recommendationSections[index].errorMessage = "加载已取消，请重试"
+        }
+        guard !Task.isCancelled, currentSource() == source else { return }
+        if !homeVideos.isEmpty || recommendationSections.contains(where: { !$0.videos.isEmpty }) {
+            lastSuccessfulSource = source
+            if recommendationFilters.isEmpty {
+                snapshotStore.save(source: source, sorts: sorts, videos: homeVideos, sections: recommendationSections)
+            }
+        } else if recommendationFilters.isEmpty, selectedSort?.isRecommendation == true {
+            let attempted = Set(plans.flatMap { $0.isMixed ? $0.contributingSorts.map(\.id) : [$0.sort.id] })
+            for sort in Self.orderedRecommendationCategories(from: sorts) where !attempted.contains(sort.id) {
+                guard !budget.isFinished else { return }
+                guard recommendationRequestID == requestID, currentSource() == source, !Task.isCancelled else { return }
+                guard let preview = try? await categoryPreview(source: source, sort: sort, filters: recommendationSourceFilters(for: sort), budget: budget),
+                      !preview.videos.isEmpty else { continue }
+                guard recommendationRequestID == requestID, currentSource() == source, !Task.isCancelled else { return }
+                recommendationSections = [HomeRecommendationSection(sort: sort, filters: preview.filters,
+                    videos: Array(Self.uniqueVideos(preview.videos).prefix(24)), isLoading: false)]
+                lastSuccessfulSource = source
+                snapshotStore.save(source: source, sorts: sorts, videos: homeVideos, sections: recommendationSections)
+                return
+            }
+            guard !budget.isFinished else { return }
+            await recoverUnavailableSource(source, homeRequest: homeRequestID, recommendationRequest: requestID,
+                                           reason: "来源未返回影片，首页和分类内容均不可用", budget: budget)
+        }
+    }
+
+    @discardableResult
+    func openRecommendation(_ section: HomeRecommendationSection) -> Task<Void, Never>? {
+        // "其他"分区使用合成分类 ID；"更多"回退到第一个真实贡献分类。
+        guard let sort = sorts.first(where: { $0.id == section.sort.id })
+            ?? sorts.first(where: { $0.id == section.contributingSorts.first?.id }) else { return nil }
+        selectedSort = sort
+        selectedFilters = section.filters
+        for (key, value) in localRecommendationFilters(for: sort) {
+            selectedFilters[key] = value
+        }
+        return reloadSelectedCategory()
+    }
+
+    static func preferredSort(previous: MovieSort.SortData?, available: [MovieSort.SortData], sameSource: Bool) -> MovieSort.SortData? {
+        guard let previous else { return available.first }
+        if sameSource, let sameID = available.first(where: { $0.id == previous.id }) { return sameID }
+        return available.first { $0.name == previous.name } ?? available.first
+    }
+
+    /// 空分类占位不代表来源可用；失败时只切换到实际返回影片的来源。
+    private func recoverUnavailableSource(
+        _ failedSource: SourceBean,
+        homeRequest: UUID,
+        recommendationRequest: UUID? = nil,
+        reason: String,
+        budget: HomeLoadBudget
+    ) async {
+        guard homeRequestID == homeRequest, currentSource() == failedSource, !Task.isCancelled else { return }
+        isLoading = true
+        sourceRecoveryMessage = "\(failedSource.name)暂时没有可用首页，正在尝试其他来源…"
+        let fallback = await firstAvailableFallback(excluding: failedSource, budget: budget)
+        guard homeRequestID == homeRequest, currentSource() == failedSource, !Task.isCancelled,
+              recommendationRequest == nil || recommendationRequestID == recommendationRequest else { return }
+        isLoading = false
+        guard !budget.isFinished else { return }
+        guard let fallback else {
+            sourceRecoveryMessage = nil
+            errorMessage = "\(failedSource.name)暂时无法提供首页内容。\(reason)。请重试或切换其他来源。"
+            if sorts.isEmpty { sorts = [.home()] }
+            selectedSort = .home()
+            return
+        }
+        selectHomeSource(fallback.source)
+        selectedSort = .home()
+        applySortResult(fallback.result, source: fallback.source)
+        unavailableSource = failedSource
+        sourceRecoveryMessage = "\(failedSource.name)暂时不可用，已切换到\(fallback.source.name)"
+        lastLoadFailedDueToNetwork = false
+        lastSuccessfulSource = fallback.source
+        await loadRecommendations(budget: budget)
+    }
+
+    func retryUnavailableSource() async {
+        guard let source = unavailableSource else { return }
+        selectHomeSource(source)
+        await refresh()
+    }
+
+    private typealias FallbackResult = (source: SourceBean, result: (sorts: [MovieSort.SortData], homeVideos: [Movie.Video]))
+
+    private func firstAvailableFallback(excluding failedSource: SourceBean, budget: HomeLoadBudget) async -> FallbackResult? {
+        var tried = Set([failedSource.key])
+        let configuredSources = fallbackSources()
+        // 只恢复当前配置仍包含的来源，不能跳回上一个接口的同名站点。
+        if let previous = lastSuccessfulSource, configuredSources.contains(previous), tried.insert(previous.key).inserted {
+            if let result = try? await loadFallback(previous, budget: budget) { return result }
+        }
+        guard !Task.isCancelled else { return nil }
+        let candidates = configuredSources.filter { tried.insert($0.key).inserted }
+        // 可用来源可能位于配置末尾；限制并发数，而不是截断候选列表。
+        // firstSuccessfulSource 最多同时检查三个来源，找到影片后取消其余请求。
+        return await firstSuccessfulSource(in: candidates, budget: budget)
+    }
+
+    private func firstSuccessfulSource(in candidates: [SourceBean], budget: HomeLoadBudget) async -> FallbackResult? {
+        await withTaskGroup(of: FallbackResult?.self) { group in
+            var iterator = candidates.makeIterator()
+            func enqueue(_ source: SourceBean) {
+                group.addTask { try? await self.loadFallback(source, budget: budget) }
+            }
+            for _ in 0..<3 { if let source = iterator.next() { enqueue(source) } }
+            for await fallback in group {
+                if Task.isCancelled || budget.isFinished { group.cancelAll(); break }
+                if let fallback {
+                    group.cancelAll()
+                    return fallback
+                }
+                if let source = iterator.next() { enqueue(source) }
+            }
+            return nil
+        }
+    }
+
+    private func loadFallback(_ source: SourceBean, budget: HomeLoadBudget) async throws -> FallbackResult {
+        try Task.checkCancellation()
+        var result = try await budget.run { try await self.sortLoader(source) }
+        try Task.checkCancellation()
+        if result.homeVideos.isEmpty {
+            // 推荐展示数量不应限制来源可用性检查。
+            for sort in Self.orderedRecommendationCategories(from: result.sorts) {
+                try Task.checkCancellation()
+                guard !budget.isFinished else { throw HomeLoadBudget.Failure.timedOut }
+                let filters = source.type == 0 ? [:] : Self.popularFilters(for: sort)
+                if let preview = try? await categoryPreview(source: source, sort: sort, filters: filters, budget: budget), !preview.videos.isEmpty {
+                    result.homeVideos = Array(Self.uniqueVideos(preview.videos).prefix(24))
+                    break
+                }
+            }
+        }
+        try Task.checkCancellation()
+        guard !result.homeVideos.isEmpty else {
+            throw SourceError.parseError("来源未返回可用影片")
+        }
+        return (source, result)
+    }
+
+    /// 排序是可选增强；它不可用时保留年份/地区条件，只移除热门排序。
+    private func categoryPreview(source: SourceBean, sort: MovieSort.SortData, filters: [String: String], budget: HomeLoadBudget) async throws -> (videos: [Movie.Video], filters: [String: String]) {
+        let popular = Self.popularFilters(for: sort)
+        let defaultOrder = filters.filter { popular[$0.key] != $0.value }
+        do {
+            let videos = try await budget.run { try await self.listLoader(source, sort, 1, filters) }
+            if !videos.isEmpty || defaultOrder == filters { return (videos, filters) }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            if defaultOrder == filters { throw error }
+        }
+        try Task.checkCancellation()
+        return (try await budget.run { try await self.listLoader(source, sort, 1, defaultOrder) }, defaultOrder)
+    }
+
     /// 网络恢复时，若上次因网络错误导致首页为空，自动重新加载。
     private func setupNetworkRestoredAutoRetry() {
         networkRestoredCancellable = NetworkMonitor.shared.networkRestoredPublisher
@@ -85,72 +667,188 @@ class HomeViewModel: ObservableObject {
             }
     }
     
-    /// 拉取推荐页分区数据：取前 4 个分类，各拉第一页，组成横向内容行。
-    /// 单个分区拉取失败不影响其他分区；已有数据时不重复拉取。
-    func loadRecommendSections() async {
-        guard let source = ApiConfig.shared.homeSourceBean else { return }
-        guard recommendSections.isEmpty else { return }
-        let candidates = Array(sorts.filter { $0.id != "home" }.prefix(4))
-        guard !candidates.isEmpty else { return }
-
-        recommendSections = candidates.map { HomeRecommendSection(sort: $0) }
-        for (index, sort) in candidates.enumerated() {
-            do {
-                let videos = try await sourceService.getList(sourceBean: source, sortData: sort, page: 1)
-                guard index < recommendSections.count else { return }
-                recommendSections[index].videos = Array(videos.prefix(12))
-            } catch {
-                // 分区加载失败保持空行，用户切到该分类页仍能正常浏览。
-                continue
-            }
-        }
-    }
-
     /// 选择分类
-    func selectSort(_ sort: MovieSort.SortData) {
+    @discardableResult
+    func selectSort(_ sort: MovieSort.SortData) -> Task<Void, Never>? {
+        guard selectedSort?.id != sort.id else { return nil }
+        if isLoadingHome { stopHomeLoading() }
+        cancelCategoryLoad()
         // 切分类时先重置分页状态，避免旧分类残留数据闪烁。
         selectedSort = sort
+        selectedFilters = [:]
         errorMessage = nil
         categoryVideos = []
         currentPage = 1
         hasMore = true
         
-        if sort.id == "home" {
-            return
+        if sort.isRecommendation {
+            guard recommendationSections.isEmpty else { return nil }
+            return Task { await loadRecommendations() }
         } else {
-            Task {
-                await loadCategoryVideos(page: 1, sort: sort)
-            }
+            return beginCategoryLoad(page: 1, sort: sort)
         }
+    }
+
+    @discardableResult
+    func selectFilter(key: String, value: String) -> Task<Void, Never>? {
+        guard let sort = selectedSort,
+              let filter = browseFilters.first(where: { $0.key == key }),
+              value.isEmpty || filter.values.contains(where: { $0.v == value }),
+              (activeFilters[key] ?? "") != value else { return nil }
+        if sort.isRecommendation {
+            recommendationFilters[key] = value.isEmpty ? nil : value
+            return reloadRecommendations()
+        }
+        let previousLocal = localCategoryFilters
+        selectedFilters[key] = value.isEmpty ? nil : value
+        let isDeclaredValue = sort.filters.contains { $0.key == key && $0.values.contains { $0.v == value } }
+        if (previousLocal[key] != nil && (value.isEmpty || !isDeclaredValue))
+            || !sort.filters.contains(where: { $0.key == key }) { return nil }
+        return reloadSelectedCategory()
+    }
+
+    @discardableResult
+    func clearFilters() -> Task<Void, Never>? {
+        guard !activeFilters.isEmpty else { return nil }
+        if selectedSort?.isRecommendation == true {
+            recommendationFilters = [:]
+            return reloadRecommendations()
+        }
+        let onlyLocal = selectedFilters.keys.allSatisfy { localCategoryFilters[$0] != nil }
+        selectedFilters = [:]
+        return onlyLocal ? nil : reloadSelectedCategory()
+    }
+
+    private func reloadRecommendations() -> Task<Void, Never>? {
+        if !recommendationSections.isEmpty,
+           recommendationSections.allSatisfy({ !$0.isMixed && $0.filters == recommendationSourceFilters(for: $0.sort) }) {
+            return nil
+        }
+        recommendationRequestID = UUID()
+        isLoading = false
+        sourceRecoveryMessage = nil
+        recommendationSections = []
+        isLoadingRecommendations = true
+        return Task { await loadRecommendations() }
+    }
+
+    private func reloadSelectedCategory() -> Task<Void, Never>? {
+        guard let sort = selectedSort, !sort.isRecommendation else { return nil }
+        cancelCategoryLoad()
+        categoryVideos = []
+        currentPage = 1
+        hasMore = true
+        errorMessage = nil
+        return beginCategoryLoad(page: 1, sort: sort)
+    }
+
+    func retryCategoryPage() async {
+        guard !isLoading, let sort = selectedSort else { return }
+        errorMessage = nil
+        hasMore = true
+        await loadCategoryVideos(page: categoryVideos.isEmpty ? 1 : currentPage + 1, sort: sort)
+    }
+
+    private func cancelCategoryLoad() {
+        categoryRequestID = UUID()
+        categoryLoadTask?.cancel()
+        categoryLoadTask = nil
+        isLoading = false
+    }
+
+    @discardableResult
+    private func beginCategoryLoad(
+        page: Int,
+        sort: MovieSort.SortData
+    ) -> Task<Void, Never>? {
+        guard !sort.isRecommendation,
+              let source = currentSource() else { return nil }
+        // 分页触发可能由多个卡片同时到达列表尾部，只保留第一个。
+        if page > 1, isLoading { return nil }
+
+        categoryLoadTask?.cancel()
+        let requestID = UUID()
+        categoryRequestID = requestID
+        isLoading = true
+
+        // 只把接口声明过的条件发给来源；合成的年份/地区选项在本地匹配。
+        let filters = currentSource()?.type == 0 ? [:] : selectedFilters.filter { key, value in
+            sort.filters.contains { $0.key == key && $0.values.contains { $0.v == value } }
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performCategoryLoad(
+                page: page,
+                sort: sort,
+                source: source,
+                requestID: requestID,
+                filters: filters
+            )
+        }
+        categoryLoadTask = task
+        return task
     }
     
     /// 加载分类视频列表
     private func loadCategoryVideos(page: Int, sort: MovieSort.SortData) async {
-        guard sort.id != "home" else { return }
-        guard let source = ApiConfig.shared.homeSourceBean else { return }
-        // 防重复并发加载，避免分页错序。
-        guard !isLoading else { return }
-        
-        isLoading = true
-        defer { isLoading = false }
-        
-        do {
-            let videos = try await sourceService.getList(sourceBean: source, sortData: sort, page: page)
-            
-            // 分类切换过程中，丢弃旧请求结果
-            guard selectedSort?.id == sort.id else { return }
-            
-            if page == 1 {
-                categoryVideos = videos
-            } else {
-                categoryVideos.append(contentsOf: videos)
+        guard let task = beginCategoryLoad(page: page, sort: sort) else { return }
+        await task.value
+    }
+
+    private func performCategoryLoad(
+        page: Int,
+        sort: MovieSort.SortData,
+        source: SourceBean,
+        requestID: UUID,
+        filters: [String: String]
+    ) async {
+        defer {
+            if categoryRequestID == requestID {
+                isLoading = false
+                categoryLoadTask = nil
             }
-            // 以"返回非空"作为是否继续分页的轻量判断。
+        }
+
+        do {
+            let videos = try await listLoader(source, sort, page, filters)
+            try Task.checkCancellation()
+            
+            // 分类或数据源切换过程中，丢弃旧请求结果。
+            guard categoryRequestID == requestID,
+                  selectedSort?.id == sort.id,
+                  currentSource() == source else { return }
+            
+            if !videos.isEmpty { lastSuccessfulSource = source }
+            if page == 1 {
+                categoryVideos = Self.uniqueVideos(videos)
+            } else {
+                let existingIDs = Set(categoryVideos.map(\.id))
+                let newVideos = videos.filter { !existingIDs.contains($0.id) }
+                categoryVideos.append(contentsOf: Self.uniqueVideos(newVideos))
+                // 接口忽略页码并重复返回同一页时，及时停止继续触底请求。
+                if newVideos.isEmpty {
+                    hasMore = false
+                    return
+                }
+            }
             currentPage = page
             hasMore = !videos.isEmpty
+        } catch is CancellationError {
+            // 切换分类是正常取消，不展示错误。
         } catch {
-            guard selectedSort?.id == sort.id else { return }
+            guard categoryRequestID == requestID,
+                  selectedSort?.id == sort.id else { return }
+            hasMore = false
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private static func uniqueVideos(_ videos: [Movie.Video]) -> [Movie.Video] {
+        var seen = Set<String>()
+        return videos.filter { video in
+            let key = video.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            // 空 ID 无法安全判重，保留交给视图展示。
+            return key.isEmpty || seen.insert(key).inserted
         }
     }
     
@@ -162,7 +860,7 @@ class HomeViewModel: ObservableObject {
     
     /// 当最后一个元素出现时触发加载下一页
     func loadMoreIfNeeded(currentItem: Movie.Video) async {
-        guard selectedSort?.id != "home" else { return }
+        guard selectedSort?.isRecommendation != true else { return }
         guard hasMore, !isLoading else { return }
         guard categoryVideos.last?.id == currentItem.id else { return }
         guard let sort = selectedSort else { return }
@@ -173,21 +871,26 @@ class HomeViewModel: ObservableObject {
     
     /// 刷新
     func refresh() async {
+        let requestID = UUID()
+        refreshRequestID = requestID
+        cancelCategoryLoad()
         // 全量刷新时重置分页与错误态，再重新拉分类与当前分类内容。
         currentPage = 1
         hasMore = true
         categoryVideos = []
-        recommendSections = []
         errorMessage = nil
         await loadSorts()
+        guard refreshRequestID == requestID, !Task.isCancelled else { return }
+        // 用户已在推荐加载期间进入分类时，不重复覆盖正在浏览的分页结果。
+        guard categoryLoadTask == nil, categoryVideos.isEmpty else { return }
         
         guard let sort = selectedSort else { return }
-        if sort.id == "home" { return }
+        if sort.isRecommendation { return }
         
         if let matchedSort = sorts.first(where: { $0.id == sort.id }) {
             selectedSort = matchedSort
             await loadCategoryVideos(page: 1, sort: matchedSort)
-        } else if let firstCategory = sorts.first(where: { $0.id != "home" }) {
+        } else if let firstCategory = sorts.first(where: { !$0.isRecommendation }) {
             selectedSort = firstCategory
             await loadCategoryVideos(page: 1, sort: firstCategory)
         }

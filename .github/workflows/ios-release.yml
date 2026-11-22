@@ -1,0 +1,62 @@
+name: iOS 16.4 compatibility CI
+on:
+  push:
+    branches: ['compat/ios16-build28-20261123']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      TVBOX_INCLUDE_LOCAL_CONFIG: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Generate project and run gateway tests
+        run: |
+          mkdir -p build/DerivedData
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen generate
+          cd spider-gateway
+          node --test > ../build/DerivedData/gateway-tests.log 2>&1
+      - name: XCTest on available simulator
+        id: xctest
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for ds in json.load(sys.stdin)["devices"].values() for d in ds if "iPhone" in d["name"]))')
+          xcodebuild test -project tvbox.xcodeproj -scheme tvbox -derivedDataPath build/DerivedData -destination "platform=iOS Simulator,id=$DEST" -resultBundlePath build/DerivedData/Tests.xcresult CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/DerivedData/xctest.log
+      - name: Generate and build unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/DerivedData
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen generate
+          ./package_ios.sh --unsigned 2>&1 | tee build/DerivedData/ios16-package.log
+      - name: Inspect deployment and all binary dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=build/DerivedData/Archives/TVBox-iOS.xcarchive/Products/Applications/TVBox.app
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist"
+          find "$APP" -type f -print0 | while IFS= read -r -d '' f; do
+            if file "$f" | grep -q 'Mach-O'; then
+              echo "===== $f"
+              xcrun vtool -show-build "$f"
+              xcrun otool -L "$f"
+            fi
+          done | tee build/DerivedData/binary-dependencies.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: TVBox-iOS16-unsigned-build-evidence
+          path: |
+            build/DerivedData/Packages/*.ipa
+            build/DerivedData/*.log
+          retention-days: 7

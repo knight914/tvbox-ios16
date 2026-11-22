@@ -46,6 +46,10 @@ struct LiveView: View {
     private let channelInfoAutoHideDelay: TimeInterval = 3.0
     /// 用户交互令牌，递增后可通知 VLC 子视图重置自动隐藏逻辑。
     @State private var vlcInteractionToken = 0
+    /// 系统直播播放器的显示器防休眠 owner。
+    @State private var sleepPreventionOwner = UUID()
+    /// 跟踪系统直播播放器是否真正进入播放状态。
+    @State private var playerTimeControlObserver: NSKeyValueObservation?
     
     /// 当前实际生效的播放器内核。
     /// 优先读取直播专用字段，再回退老字段，最后使用默认值。
@@ -71,9 +75,29 @@ struct LiveView: View {
                 
                 if viewModel.channelGroups.isEmpty {
                     emptyState
+                    #if os(iOS)
+                    VStack {
+                        HStack {
+                            liveBackButton
+                            Spacer()
+                        }
+                        Spacer()
+                    }
+                    .padding(16)
+                    #endif
                 } else {
                     // 播放器
-                    if selectedEngine == .vlc {
+                    if selectedEngine == .mpv {
+                        #if os(macOS) && canImport(Libmpv)
+                        if let url = viewModel.currentChannel?.currentUrl, !url.isEmpty {
+                            MPVPlayerView(urlString: url, isLive: true,
+                                          onPlaybackFailed: { handlePlaybackFailure(trigger: "mpv_error") },
+                                          onToggleFullScreen: { toggleWindowFullScreen() })
+                                .ignoresSafeArea()
+                                .id("mpv-live-\(url)-\(viewModel.currentChannel?.id ?? "")")
+                        }
+                        #endif
+                    } else if selectedEngine == .vlc {
                         if let urlString = viewModel.currentChannel?.currentUrl, !urlString.isEmpty {
                             VLCLivePlayerView(
                                 urlString: urlString,
@@ -112,7 +136,7 @@ struct LiveView: View {
                 viewModel.loadChannels()
                 wakeUpCurrentChannelInfo()
             }
-            .onChange(of: viewModel.currentChannel?.currentUrl) { newValue in
+            .onCompatibleChange(of: viewModel.currentChannel?.currentUrl) { _, newValue in
                 if selectedEngine == .system {
                     playChannel(url: newValue)
                 } else {
@@ -120,12 +144,12 @@ struct LiveView: View {
                 }
                 wakeUpCurrentChannelInfo()
             }
-            .onChange(of: viewModel.currentChannel?.id) { _ in
+            .onCompatibleChange(of: viewModel.currentChannel?.id) { _, _ in
                 // 切台后清空失败线路记录，避免复用上个频道的失败状态。
                 resetFailureTracking(for: viewModel.currentChannel)
                 wakeUpCurrentChannelInfo()
             }
-            .onChange(of: selectedEngine) { _ in
+            .onCompatibleChange(of: selectedEngine) { _, _ in
                 if selectedEngine == .system {
                     playChannel(url: viewModel.currentChannel?.currentUrl)
                 } else {
@@ -157,38 +181,22 @@ struct LiveView: View {
             }
             #endif
         }
+        .environment(\.colorScheme, .dark)
     }
     
     // MARK: - 空状态
     
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // 空状态也要有返回入口，否则没有直播源时用户会被困在本页。
-            HStack {
-                #if os(iOS)
-                liveBackButton
-                #endif
-                Spacer()
-            }
-            .padding(.top, 18)
-            .padding(.horizontal, 16)
-
-            Spacer()
-
-            VStack(spacing: 16) {
-                Image(systemName: "tv.slash")
-                    .font(.system(size: 48))
-                    .foregroundColor(.gray)
-                Text("暂无直播源")
-                    .font(.headline)
-                    .foregroundColor(.gray)
-                Text("请在设置中配置包含直播源的接口")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-
-            Spacer()
+        VStack(spacing: 16) {
+            Image(systemName: "tv.slash")
+                .font(.system(size: 48))
+                .foregroundColor(.gray)
+            Text("暂无直播源")
+                .font(.headline)
+                .foregroundColor(.gray)
+            Text("请在设置中配置包含直播源的接口")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
         }
     }
     
@@ -331,7 +339,7 @@ struct LiveView: View {
             Image(systemName: "chevron.left")
                 .font(.system(size: 16, weight: .bold))
                 .foregroundColor(.white.opacity(0.9))
-                .frame(width: 38, height: 38)
+                .frame(width: 44, height: 44)
                 .background(Color.black.opacity(0.35))
                 .clipShape(Circle())
                 .overlay(
@@ -340,6 +348,7 @@ struct LiveView: View {
                 )
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("返回首页")
     }
     #endif
     
@@ -438,6 +447,7 @@ struct LiveView: View {
         }
         .padding(16)
         .glassCard(cornerRadius: 14)
+        .frame(maxWidth: currentChannelInfoMaxWidth)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 16)
         .padding(.bottom, 8)
@@ -628,11 +638,20 @@ struct LiveView: View {
         observePlaybackFailure(for: playerItem)
         
         let newPlayer = AVPlayer(playerItem: playerItem)
+        playerTimeControlObserver = newPlayer.observe(\.timeControlStatus, options: [.initial, .new]) { player, _ in
+            let isPlaying = player.timeControlStatus == .playing
+            DispatchQueue.main.async {
+                PlaybackSleepPreventer.shared.setPlaybackActive(isPlaying, owner: sleepPreventionOwner)
+            }
+        }
         newPlayer.play()
         avPlayer = newPlayer
     }
     
     private func cleanupPlayer() {
+        playerTimeControlObserver?.invalidate()
+        playerTimeControlObserver = nil
+        PlaybackSleepPreventer.shared.end(owner: sleepPreventionOwner)
         // 先移除观察者再释放播放器，避免悬空回调。
         if let observer = playbackFailedObserver {
             NotificationCenter.default.removeObserver(observer)
@@ -696,7 +715,9 @@ struct LiveView: View {
         failedSourceIndices.insert(failedIndex)
         
         guard switchToNextAvailableSource(totalSources: channel.sourceNum) else {
-            print("直播线路全部尝试失败: channel=\(channel.channelName), trigger=\(trigger)")
+            #if DEBUG
+            print("直播线路全部尝试失败: trigger=\(trigger)")
+            #endif
             return
         }
     }
