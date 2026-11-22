@@ -642,7 +642,7 @@ class ApiConfig: ObservableObject {
     nonisolated static func parseLives(
         _ lives: [AppConfigData.LiveConfig],
         apiUrl: String,
-        fetchPlaylist: @Sendable (String) async throws -> String = {
+        fetchPlaylist: @escaping @Sendable (String) async throws -> String = {
             try await NetworkManager.shared.getString(from: $0)
         }
     ) async -> [LiveChannelGroup] {
