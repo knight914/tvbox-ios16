@@ -5,7 +5,10 @@ name: Build unsigned IPA (TrollStore)
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches: [fix/config-import-regression]
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -48,28 +51,39 @@ jobs:
             fi
           done
 
+      - name: Config import simulator regressions
+        run: |
+          set -o pipefail
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k in sorted(d,reverse=True) if ".iOS-" in k for x in d[k] if x["name"].startswith("iPhone")))')
+          xcodebuild test -project tvbox.xcodeproj -scheme tvbox \
+            -destination "platform=iOS Simulator,id=$DEVICE" \
+            -only-testing:tvbox-Tests/ConfigImportTests \
+            -parallel-testing-enabled NO -resultBundlePath ConfigImport.xcresult \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee test.log
+          xcrun xcresulttool get test-results summary --path ConfigImport.xcresult --format json > test-summary.json
+          cat test-summary.json
+          python3 -c 'import json; s=json.load(open("test-summary.json")); assert s["passedTests"] >= 3 and s["failedTests"] == 0 and s["skippedTests"] == 0, s'
+
+      - name: Upload simulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-results
+          path: |
+            test.log
+            test-summary.json
+            ConfigImport.xcresult
+          if-no-files-found: ignore
+
       - name: 归档构建（关闭代码签名）
         run: |
-          rm -rf build
-          set +e
-          xcodebuild archive \
-            -project tvbox.xcodeproj \
-            -scheme tvbox \
-            -configuration Release \
-            -destination "generic/platform=iOS" \
+          set -o pipefail
+          xcodebuild archive -project tvbox.xcodeproj -scheme tvbox \
+            -configuration Release -destination 'generic/platform=iOS' \
             -archivePath "$PWD/build/tvbox.xcarchive" \
-            -skipPackagePluginValidation \
-            -skipMacroValidation \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_ENTITLEMENTS="" \
-            DEVELOPMENT_TEAM="" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            ONLY_ACTIVE_ARCH=NO > build.log 2>&1 || true
-          echo "=== xcodebuild 退出码已忽略，交由下一步判定 ==="
-          tail -5 build.log
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" ONLY_ACTIVE_ARCH=NO 2>&1 | tee build.log
 
       - name: 提取构建日志摘要（失败时写入 Summary + Annotations）
         if: failure()
@@ -122,27 +136,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: 判定构建结果
-        run: |
-          if [ ! -f build.log ]; then
-            echo "::error::build.log 未生成，xcodebuild 未正常执行"
-            exit 1
-          fi
-          # 判定前先过滤两类无害噪音行：
-          # 1) "Build description parse error"（AppIntents 元数据解析的假 error，不影响产物）
-          # 2) "Skipping preflight"（SWIFT 优化级别的 note）
-          if grep -vE "Build description parse error|Skipping preflight" build.log \
-             | grep -qE "error:|\*\* ARCHIVE FAILED \*\*"; then
-            echo "::error::归档构建失败，详见本次运行的 Job Summary"
-            exit 1
-          fi
-          if [ ! -d "build/tvbox.xcarchive" ]; then
-            echo "::error::构建未产出 .xcarchive"
-            tail -40 build.log
-            exit 1
-          fi
-          echo "归档成功"
-
       - name: 打包成未签名 IPA
         run: |
           set -euo pipefail
@@ -176,6 +169,8 @@ jobs:
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "build/Payload/$APP_NAME/Info.plist" || true
           /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "build/Payload/$APP_NAME/Info.plist" || true
           /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "build/Payload/$APP_NAME/Info.plist" || true
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "build/Payload/$APP_NAME/Info.plist")" = xyz.appinstall.nov.carbon.lam
+          test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "build/Payload/$APP_NAME/Info.plist")" = 16.4
           echo "=== Payload 结构 ==="
           ls -la "build/Payload/$APP_NAME"
 

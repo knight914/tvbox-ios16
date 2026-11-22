@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// 核心配置管理器 - 对应 Android 版 ApiConfig.java
 /// 负责加载和解析远程 JSON 配置，管理视频源列表
@@ -6,7 +7,7 @@ import Foundation
 class ApiConfig: ObservableObject {
     static let shared = ApiConfig()
     private static let maxConfigResolveDepth = 6
-    private static let maxRedirectCandidates = 20
+    nonisolated private static let maxRedirectCandidates = 20
     private static let rawConfigCacheTTL: TimeInterval = 20
     private static let maxRawConfigCacheEntries = 24
     
@@ -143,20 +144,13 @@ class ApiConfig: ObservableObject {
         
         let jsonStr = try await fetchConfigText(from: normalizedUrl)
         
-        // 清理非标准 JSON（Android 端 Gson 默认支持注释，Swift 需要手动处理）
-        let cleanedJson = Self.stripJsonComments(jsonStr)
-        
-        guard let data = cleanedJson.data(using: .utf8) else {
-            throw ConfigError.parseError("无法解析配置数据")
-        }
-        
-        let decoder = JSONDecoder()
-        let decodedConfig = try? decoder.decode(AppConfigData.self, from: data)
+        let (cleanedJson, decodedConfig, multiRepo) = await Self.decodeConfigText(jsonStr)
+        try Task.checkCancellation()
         if let config = decodedConfig, config.hasUsableContent {
             return (config, normalizedUrl)
         }
         
-        if let multiRepo = try? decoder.decode(MultiRepoConfigData.self, from: data) {
+        if let multiRepo {
             let candidateUrls = Self.uniqueUrlsInOrder(
                 multiRepo.candidateUrls.map(Self.normalizeConfigUrl)
             )
@@ -180,7 +174,7 @@ class ApiConfig: ObservableObject {
             throw ConfigError.parseError("多仓库配置中没有可用地址")
         }
         
-        let redirectCandidates = Self.extractConfigRedirectCandidates(from: cleanedJson)
+        let redirectCandidates = await Self.extractConfigRedirectCandidates(from: cleanedJson)
             .filter { $0.lowercased() != visitKey && !nextVisited.contains($0.lowercased()) }
         
         if !redirectCandidates.isEmpty {
@@ -237,7 +231,7 @@ class ApiConfig: ObservableObject {
         staleKeys.forEach { rawConfigCache.removeValue(forKey: $0) }
     }
     
-    private static func uniqueUrlsInOrder(_ urls: [String]) -> [String] {
+    nonisolated private static func uniqueUrlsInOrder(_ urls: [String]) -> [String] {
         var seen: Set<String> = []
         var result: [String] = []
         
@@ -257,7 +251,7 @@ class ApiConfig: ObservableObject {
     /// - 明文 URL 文本
     /// - data-clipboard-text（常见导航页“点击复制”）
     /// - JSON 片段中的 url 字段
-    private static func extractConfigRedirectCandidates(from content: String) -> [String] {
+    nonisolated private static func extractConfigRedirectCandidates(from content: String) async -> [String] {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         var rawCandidates: [String] = []
         
@@ -288,7 +282,7 @@ class ApiConfig: ObservableObject {
         return Array(uniqueUrlsInOrder(normalized).prefix(maxRedirectCandidates))
     }
     
-    private static func matchCaptureGroup(pattern: String, in content: String) -> [String] {
+    nonisolated private static func matchCaptureGroup(pattern: String, in content: String) -> [String] {
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
             return []
         }
@@ -305,7 +299,7 @@ class ApiConfig: ObservableObject {
         }
     }
     
-    private static func sanitizeExtractedUrl(_ value: String) -> String {
+    nonisolated private static func sanitizeExtractedUrl(_ value: String) -> String {
         var result = value.trimmingCharacters(in: .whitespacesAndNewlines)
         result = result.replacingOccurrences(of: "&amp;", with: "&")
         result = result.replacingOccurrences(of: "\\/", with: "/")
@@ -320,7 +314,7 @@ class ApiConfig: ObservableObject {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
-    private static func isLikelyBinaryAssetUrl(_ urlString: String) -> Bool {
+    nonisolated private static func isLikelyBinaryAssetUrl(_ urlString: String) -> Bool {
         guard let components = URLComponents(string: urlString) else { return false }
         let path = components.path.lowercased()
         return path.hasSuffix(".png")
@@ -336,7 +330,7 @@ class ApiConfig: ObservableObject {
             || path.hasSuffix(".ttf")
     }
     
-    private static func isLikelyConfigPointerUrl(_ urlString: String) -> Bool {
+    nonisolated private static func isLikelyConfigPointerUrl(_ urlString: String) -> Bool {
         guard let components = URLComponents(string: urlString) else { return false }
         
         let host = (components.host ?? "").lowercased()
@@ -367,7 +361,7 @@ class ApiConfig: ObservableObject {
     /// 1) 修正 https:/xxx 之类的单斜杠写法；
     /// 2) 将 github.com/.../blob/... 转为 raw.githubusercontent.com/...；
     /// 3) 兼容 gh-proxy + github/blob 的嵌套代理地址。
-    static func normalizeConfigUrl(_ rawUrl: String) -> String {
+    nonisolated static func normalizeConfigUrl(_ rawUrl: String) -> String {
         let trimmed = rawUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return trimmed }
         
@@ -384,7 +378,7 @@ class ApiConfig: ObservableObject {
         return fixedScheme
     }
     
-    private static func fixMalformedSchemeIfNeeded(_ urlString: String) -> String {
+    nonisolated private static func fixMalformedSchemeIfNeeded(_ urlString: String) -> String {
         let fixedHttps = urlString.replacingOccurrences(
             of: #"^https:/(?!/)"#,
             with: "https://",
@@ -397,7 +391,7 @@ class ApiConfig: ObservableObject {
         )
     }
     
-    private static func normalizeGhProxyWrappedUrl(_ urlString: String) -> String? {
+    nonisolated private static func normalizeGhProxyWrappedUrl(_ urlString: String) -> String? {
         guard let components = URLComponents(string: urlString),
               let host = components.host?.lowercased(),
               host.contains("gh-proxy") else {
@@ -427,7 +421,7 @@ class ApiConfig: ObservableObject {
         return rebuilt
     }
     
-    private static func convertGitHubBlobUrlToRaw(_ urlString: String) -> String? {
+    nonisolated private static func convertGitHubBlobUrlToRaw(_ urlString: String) -> String? {
         guard let components = URLComponents(string: urlString),
               let host = components.host?.lowercased(),
               host == "github.com" || host == "www.github.com" else {
@@ -459,7 +453,7 @@ class ApiConfig: ObservableObject {
     
     /// 去除 JSON 中的 // 行注释，兼容 TVBox 配置文件格式
     /// Android 端 Gson 原生支持注释，Swift 的 JSONDecoder 不支持
-    static func stripJsonComments(_ json: String) -> String {
+    nonisolated static func stripJsonComments(_ json: String) -> String {
         let lines = json.components(separatedBy: "\n")
         var result: [String] = []
         
@@ -488,7 +482,7 @@ class ApiConfig: ObservableObject {
     }
     
     /// 移除行内注释（只处理不在字符串内的 //）
-    private static func removeInlineComment(from line: String) -> String {
+    nonisolated private static func removeInlineComment(from line: String) -> String {
         var inString = false
         var escape = false
         let chars = Array(line)
@@ -522,31 +516,36 @@ class ApiConfig: ObservableObject {
     func fetchMultiRepoOptions(from apiUrl: String) async throws -> [MultiRepoOption]? {
         let normalizedUrl = Self.normalizeConfigUrl(apiUrl)
         let jsonStr = try await fetchConfigText(from: normalizedUrl)
-        let cleanedJson = Self.stripJsonComments(jsonStr)
-        
-        guard let data = cleanedJson.data(using: .utf8) else {
-            throw ConfigError.parseError("无法解析配置数据")
-        }
-        
+        return await Self.multiRepoOptions(in: jsonStr)
+    }
+
+    nonisolated private static func decodeConfigText(_ text: String) async -> (String, AppConfigData?, MultiRepoConfigData?) {
+        let cleaned = stripJsonComments(text)
+        let data = Data(cleaned.utf8)
         let decoder = JSONDecoder()
-        if let config = try? decoder.decode(AppConfigData.self, from: data), config.hasUsableContent {
-            return nil
-        }
-        
-        guard let multiRepo = try? decoder.decode(MultiRepoConfigData.self, from: data) else {
-            return nil
-        }
-        
+        let config = try? decoder.decode(AppConfigData.self, from: data)
+        let multiRepo = config?.hasUsableContent == true ? nil : try? decoder.decode(MultiRepoConfigData.self, from: data)
+        return (cleaned, config, multiRepo)
+    }
+
+    nonisolated static func multiRepoOptions(in text: String) async -> [MultiRepoOption]? {
+        let (_, _, multiRepo) = await decodeConfigText(text)
+        guard let multiRepo else { return nil }
+
         let normalizedCandidates = Self.uniqueUrlsInOrder(
             multiRepo.candidateUrls.map(Self.normalizeConfigUrl)
         )
         
+        var namesByURL: [String: String] = [:]
+        for entry in multiRepo.urls ?? [] {
+            let url = normalizeConfigUrl(entry.url ?? "")
+            if namesByURL[url] == nil {
+                namesByURL[url] = (entry.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
         var options: [MultiRepoOption] = []
         for candidate in normalizedCandidates {
-            let matchedEntry = multiRepo.urls?.first(where: {
-                Self.normalizeConfigUrl($0.url ?? "") == candidate
-            })
-            let displayName = matchedEntry?.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayName = namesByURL[candidate]
             let fallbackName = URL(string: candidate)?.host ?? candidate
             let resolvedName: String
             if let displayName, !displayName.isEmpty {
@@ -630,8 +629,8 @@ class ApiConfig: ObservableObject {
         
         if includeLive {
             if let lives = config.lives {
-                let parsedGroups = await parseLives(lives, apiUrl: apiUrl, loadToken: loadToken)
-                guard activeLoadToken == loadToken else { return }
+                let parsedGroups = await Self.parseLives(lives, apiUrl: apiUrl)
+                guard !Task.isCancelled, activeLoadToken == loadToken else { return }
                 liveChannelGroupList = parsedGroups
             } else {
                 liveChannelGroupList = []
@@ -640,16 +639,18 @@ class ApiConfig: ObservableObject {
     }
     
     /// 解析直播列表
-    private func parseLives(
+    nonisolated static func parseLives(
         _ lives: [AppConfigData.LiveConfig],
         apiUrl: String,
-        loadToken: UUID
+        fetchPlaylist: @Sendable (String) async throws -> String = {
+            try await NetworkManager.shared.getString(from: $0)
+        }
     ) async -> [LiveChannelGroup] {
-        var mergedGroups: [String: LiveChannelGroup] = [:]
+        var mergedGroups = LiveGroupBuilder()
         var remoteLiveTargets: [(order: Int, url: String)] = []
         
         for (index, live) in lives.enumerated() {
-            guard activeLoadToken == loadToken else { return [] }
+            guard !Task.isCancelled else { return [] }
             
             // 如果有 url，从远程加载
             if let liveUrl = live.url, !liveUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -659,8 +660,11 @@ class ApiConfig: ObservableObject {
             
             // 如果有内嵌频道
             if let channels = live.channels {
-                let inlineGroups = parseInlineLiveChannels(channels)
-                mergeLiveGroups(inlineGroups, into: &mergedGroups)
+                for channel in channels {
+                    guard !Task.isCancelled else { return [] }
+                    mergedGroups.append(named: channel.name ?? "", urls: channel.urls ?? [],
+                                        logo: channel.logo ?? "", to: channel.group ?? "其他")
+                }
             }
         }
         
@@ -672,7 +676,7 @@ class ApiConfig: ObservableObject {
                 for target in remoteLiveTargets {
                     group.addTask {
                         do {
-                            let content = try await NetworkManager.shared.getString(from: target.url)
+                            let content = try await fetchPlaylist(target.url)
                             return (target.order, content)
                         } catch {
                             print("加载直播源失败: \(target.url), error: \(error)")
@@ -691,19 +695,16 @@ class ApiConfig: ObservableObject {
             }
             
             for (_, content) in fetchedContents.sorted(by: { $0.0 < $1.0 }) {
-                guard activeLoadToken == loadToken else { return [] }
-                let groups = parseLiveContent(content)
-                mergeLiveGroups(groups, into: &mergedGroups)
-                liveChannelGroupList = sortedGroups(from: mergedGroups)
+                guard !Task.isCancelled else { return [] }
+                parseLiveContent(content, into: &mergedGroups)
             }
         }
         
-        return sortedGroups(from: mergedGroups)
+        return Task.isCancelled ? [] : mergedGroups.groups
     }
     
     /// 解析 m3u / txt 格式的直播内容
-    private func parseLiveContent(_ content: String) -> [LiveChannelGroup] {
-        var groups: [String: LiveChannelGroup] = [:]
+    nonisolated private static func parseLiveContent(_ content: String, into groups: inout LiveGroupBuilder) {
         var currentGroupName = "默认"
         
         let lines = content.components(separatedBy: .newlines)
@@ -716,6 +717,7 @@ class ApiConfig: ObservableObject {
             var currentGroup = "默认"
             
             for line in lines {
+                guard !Task.isCancelled else { return }
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 if trimmed.hasPrefix("#EXTINF:") {
                     // 解析频道名和分组
@@ -731,12 +733,11 @@ class ApiConfig: ObservableObject {
                     }
                 } else if Self.isLiveStreamUrl(trimmed) {
                     if !currentName.isEmpty {
-                        appendChannel(
+                        groups.append(
                             named: currentName,
                             urls: [trimmed],
                             logo: "",
-                            to: currentGroup,
-                            groups: &groups
+                            to: currentGroup
                         )
                         currentName = ""
                     }
@@ -745,6 +746,7 @@ class ApiConfig: ObservableObject {
         } else {
             // TXT 格式: 分组名,#genre#  或  频道名,url
             for line in lines {
+                guard !Task.isCancelled else { return }
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 guard !trimmed.isEmpty else { continue }
                 
@@ -762,114 +764,64 @@ class ApiConfig: ObservableObject {
                     let url = parts[1...].joined(separator: ",").trimmingCharacters(in: .whitespaces)
                     
                     if !name.isEmpty && Self.isLiveStreamUrl(url) {
-                        appendChannel(
+                        groups.append(
                             named: name,
                             urls: [url],
                             logo: "",
-                            to: currentGroupName,
-                            groups: &groups
+                            to: currentGroupName
                         )
                     }
                 }
             }
         }
         
-        return sortedGroups(from: groups)
     }
-    
-    private func parseInlineLiveChannels(_ channels: [AppConfigData.LiveConfig.LiveChannelConfig]) -> [LiveChannelGroup] {
-        var groups: [String: LiveChannelGroup] = [:]
-        for channel in channels {
-            appendChannel(
-                named: channel.name ?? "",
-                urls: channel.urls ?? [],
-                logo: channel.logo ?? "",
-                to: channel.group ?? "其他",
-                groups: &groups
-            )
-        }
-        return sortedGroups(from: groups)
-    }
-    
-    private func mergeLiveGroups(_ incomingGroups: [LiveChannelGroup], into groups: inout [String: LiveChannelGroup]) {
-        for group in incomingGroups {
-            for channel in group.channels {
-                appendChannel(
-                    named: channel.channelName,
-                    urls: channel.channelUrls,
-                    logo: channel.logo,
-                    to: group.groupName,
-                    groups: &groups
-                )
+
+    private struct LiveGroupBuilder {
+        private(set) var groups: [LiveChannelGroup] = []
+        private var groupIndexes: [String: Int] = [:]
+        private var channelIndexes: [[String: Int]] = []
+        private var urlSets: [[Set<String>]] = []
+
+        mutating func append(named name: String, urls: [String], logo: String, to groupName: String) {
+            let name = ApiConfig.normalizeChannelName(name)
+            let urls = ApiConfig.uniqueLiveUrls(urls)
+            guard !name.isEmpty, !urls.isEmpty else { return }
+            let groupName = ApiConfig.normalizeGroupName(groupName)
+            let groupIndex: Int
+            if let existing = groupIndexes[groupName] {
+                groupIndex = existing
+            } else {
+                groupIndex = groups.count
+                groupIndexes[groupName] = groupIndex
+                groups.append(LiveChannelGroup(groupName: groupName, groupIndex: groupIndex))
+                channelIndexes.append([:])
+                urlSets.append([])
             }
-        }
-    }
-    
-    private func appendChannel(
-        named channelName: String,
-        urls: [String],
-        logo: String,
-        to groupName: String,
-        groups: inout [String: LiveChannelGroup]
-    ) {
-        let normalizedName = Self.normalizeChannelName(channelName)
-        guard !normalizedName.isEmpty else { return }
-        
-        let validUrls = Self.uniqueLiveUrls(urls)
-        guard !validUrls.isEmpty else { return }
-        
-        let normalizedGroupName = Self.normalizeGroupName(groupName)
-        if groups[normalizedGroupName] == nil {
-            groups[normalizedGroupName] = LiveChannelGroup(
-                groupName: normalizedGroupName,
-                groupIndex: groups.count
-            )
-        }
-        
-        guard var group = groups[normalizedGroupName] else { return }
-        
-        if let existingIndex = group.channels.firstIndex(where: {
-            Self.normalizeChannelName($0.channelName) == normalizedName
-        }) {
-            var existing = group.channels[existingIndex]
-            var existingUrls = Set(existing.channelUrls.map(Self.normalizeLiveUrl))
-            for url in validUrls {
-                let normalizedUrl = Self.normalizeLiveUrl(url)
-                if !existingUrls.contains(normalizedUrl) {
-                    existing.channelUrls.append(url)
-                    existingUrls.insert(normalizedUrl)
+
+            let logo = logo.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let index = channelIndexes[groupIndex][name] {
+                for url in urls {
+                    if urlSets[groupIndex][index].insert(url).inserted {
+                        groups[groupIndex].channels[index].channelUrls.append(url)
+                    }
                 }
-            }
-            let trimmedLogo = logo.trimmingCharacters(in: .whitespacesAndNewlines)
-            if existing.logo.isEmpty && !trimmedLogo.isEmpty {
-                existing.logo = trimmedLogo
-            }
-            group.channels[existingIndex] = existing
-        } else {
-            var item = LiveChannelItem(channelName: normalizedName, channelIndex: group.channels.count)
-            item.channelUrls = validUrls
-            item.logo = logo.trimmingCharacters(in: .whitespacesAndNewlines)
-            group.channels.append(item)
-        }
-        
-        groups[normalizedGroupName] = group
-    }
-    
-    private func sortedGroups(from groups: [String: LiveChannelGroup]) -> [LiveChannelGroup] {
-        groups.values
-            .sorted { $0.groupIndex < $1.groupIndex }
-            .map { group in
-                var reindexedGroup = group
-                reindexedGroup.channels = group.channels.enumerated().map { index, channel in
-                    var reindexedChannel = channel
-                    reindexedChannel.channelIndex = index
-                    return reindexedChannel
+                if groups[groupIndex].channels[index].logo.isEmpty {
+                    groups[groupIndex].channels[index].logo = logo
                 }
-                return reindexedGroup
+            } else {
+                let index = groups[groupIndex].channels.count
+                var channel = LiveChannelItem(channelName: name, channelIndex: index)
+                channel.channelUrls = urls
+                channel.logo = logo
+                groups[groupIndex].channels.append(channel)
+                channelIndexes[groupIndex][name] = index
+                urlSets[groupIndex].append(Set(urls))
             }
+        }
     }
-    
-    private func resolveLiveUrl(_ urlString: String, baseConfigUrl: String) -> String {
+
+    nonisolated private static func resolveLiveUrl(_ urlString: String, baseConfigUrl: String) -> String {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return trimmed }
         if let url = URL(string: trimmed), url.scheme != nil {
@@ -882,7 +834,7 @@ class ApiConfig: ObservableObject {
         return Self.normalizeConfigUrl(resolved.absoluteString)
     }
     
-    private static func uniqueLiveUrls(_ urls: [String]) -> [String] {
+    nonisolated private static func uniqueLiveUrls(_ urls: [String]) -> [String] {
         var result: [String] = []
         var seen: Set<String> = []
         
@@ -896,20 +848,20 @@ class ApiConfig: ObservableObject {
         return result
     }
     
-    private static func normalizeGroupName(_ groupName: String) -> String {
+    nonisolated private static func normalizeGroupName(_ groupName: String) -> String {
         let trimmed = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "默认" : trimmed
     }
     
-    private static func normalizeChannelName(_ channelName: String) -> String {
+    nonisolated private static func normalizeChannelName(_ channelName: String) -> String {
         channelName.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
-    private static func normalizeLiveUrl(_ url: String) -> String {
+    nonisolated private static func normalizeLiveUrl(_ url: String) -> String {
         url.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
-    private static func isLiveStreamUrl(_ url: String) -> Bool {
+    nonisolated private static func isLiveStreamUrl(_ url: String) -> Bool {
         let lowercased = url.lowercased()
         return lowercased.hasPrefix("http://")
             || lowercased.hasPrefix("https://")
