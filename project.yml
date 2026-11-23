@@ -73,6 +73,20 @@ targets:
         Release:
           SWIFT_OPTIMIZATION_LEVEL: "-O"
 
+  tvbox-UITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "16.4"
+    sources:
+      - path: tvboxUITests
+    dependencies:
+      - target: tvbox
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tvbox.app.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: tvbox
+
   tvbox-macOS:
     type: application
     platform: macOS
@@ -111,3 +125,4 @@ schemes:
     test:
       targets:
         - tvbox-Tests
+        - tvbox-UITests

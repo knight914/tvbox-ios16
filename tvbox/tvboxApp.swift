@@ -31,9 +31,19 @@ struct tvboxApp: App {
     /// 应用窗口与根视图。
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(appState)
-                .environmentObject(networkMonitor)
+            Group {
+                #if DEBUG && os(iOS)
+                if ProcessInfo.processInfo.arguments.contains("--playback-layout-test") {
+                    PlaybackLayoutHarness()
+                } else {
+                    ContentView()
+                }
+                #else
+                ContentView()
+                #endif
+            }
+            .environmentObject(appState)
+            .environmentObject(networkMonitor)
         }
         #if os(macOS)
         .defaultSize(width: 1200, height: 800)
