@@ -6,11 +6,14 @@ final class PlaybackLayoutTests: XCTestCase {
         app.launchArguments = ["--playback-layout-test"]
         app.launch()
         let enter = app.buttons["enterPlayback"]
-        XCTAssertTrue(enter.waitForExistence(timeout: 15)); enter.tap()
+        XCTAssertTrue(enter.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.tabBars.firstMatch.exists)
+        enter.tap()
         let sheet = app.buttons["openSheet"]
         XCTAssertTrue(sheet.waitForExistence(timeout: 10))
         expectation(for: NSPredicate { _, _ in app.windows.firstMatch.frame.width > app.windows.firstMatch.frame.height }, evaluatedWith: app)
         waitForExpectations(timeout: 10)
+        XCTAssertFalse(app.tabBars.firstMatch.isHittable)
         XCTAssertTrue(sheet.isHittable); sheet.tap()
         XCTAssertTrue(app.staticTexts["sheetContent"].waitForExistence(timeout: 10))
         XCTAssertGreaterThan(app.windows.firstMatch.frame.width, app.windows.firstMatch.frame.height)
@@ -19,6 +22,7 @@ final class PlaybackLayoutTests: XCTestCase {
         image.name = "Native landscape sheet"; image.lifetime = .keepAlways; add(image)
         app.buttons["closeSheet"].tap(); app.buttons["exitPlayback"].tap()
         XCTAssertTrue(enter.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.tabBars.firstMatch.isHittable)
         expectation(for: NSPredicate { _, _ in app.windows.firstMatch.frame.height > app.windows.firstMatch.frame.width }, evaluatedWith: app)
         waitForExpectations(timeout: 10)
     }

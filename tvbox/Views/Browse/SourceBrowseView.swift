@@ -29,6 +29,7 @@ struct SourceBrowseView: View {
         }
         .task { await viewModel.initializeIfNeeded() }
         .refreshable { await viewModel.refresh() }
+        .onDisappear { viewModel.cancelLoading() }
     }
 
     // MARK: - 页头
@@ -44,6 +45,7 @@ struct SourceBrowseView: View {
                     .foregroundColor(.white)
                 Spacer()
                 if viewModel.isLoading {
+                    Button("取消") { viewModel.cancelLoading() }
                     ProgressView()
                         .tint(.orange)
                 }
@@ -175,7 +177,8 @@ struct SourceBrowseView: View {
                 if viewModel.isLoading && !viewModel.videos.isEmpty {
                     HStack {
                         Spacer()
-                        ProgressView()
+                        Button("取消") { viewModel.cancelLoading() }
+                    ProgressView()
                             .tint(.orange)
                             .padding(.vertical, 16)
                         Spacer()
@@ -253,6 +256,12 @@ class SourceBrowseViewModel: ObservableObject {
         await loadSource()
     }
 
+    func cancelLoading() {
+        loadGeneration = UUID()
+        isLoading = false
+        errorMessage = "已取消加载，可重试"
+    }
+
     func refresh() async {
         guard selectedSource != nil else { return }
         await loadSource()
@@ -260,6 +269,7 @@ class SourceBrowseViewModel: ObservableObject {
 
     func selectSource(_ source: SourceBean) {
         guard source.key != selectedSource?.key else { return }
+        loadGeneration = UUID()
         selectedSource = source
         sorts = [MovieSort.SortData.home()]
         selectedSort = sorts.first
@@ -270,6 +280,7 @@ class SourceBrowseViewModel: ObservableObject {
 
     func selectSort(_ sort: MovieSort.SortData) {
         guard sort.id != selectedSort?.id else { return }
+        loadGeneration = UUID()
         selectedSort = sort
         videos = []
         errorMessage = nil

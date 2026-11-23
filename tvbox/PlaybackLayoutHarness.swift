@@ -7,8 +7,11 @@ struct PlaybackLayoutHarness: View {
     @State private var fullscreen = false
     @State private var sheet = false
     var body: some View {
+        TabView {
         Button("Enter playback") { fullscreen = true }
             .accessibilityIdentifier("enterPlayback")
+            .tabItem { Label("Fixture root", systemImage: "house") }
+        }
             .fullScreenCover(isPresented: $fullscreen) {
                 FullScreenPlayerView(urlString: "file:///nonexistent-layout-fixture.mp4", onCloseRequested: { fullscreen = false }, title: "Layout fixture")
                     .environmentObject(store)
