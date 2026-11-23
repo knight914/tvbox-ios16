@@ -62,6 +62,9 @@ struct DetailView: View {
                         },
                         canPlayNext: canPlayNextEpisode,
                         onPlayNext: playNextEpisodeIfNeeded,
+                    episodeTitles: viewModel.currentEpisodes.map(\.name),
+                    selectedEpisodeIndex: viewModel.selectedEpisodeIndex,
+                    onSelectEpisode: selectPlayerEpisode,
                         systemController: sharedSystemController,
                         vlcController: sharedVLCController,
                         fullScreenTitle: fullscreenTitle
@@ -174,6 +177,9 @@ struct DetailView: View {
                     onPlaybackEnded: playNextEpisodeIfNeeded,
                     canPlayNext: canPlayNextEpisode,
                     onPlayNext: playNextEpisodeIfNeeded,
+                    episodeTitles: viewModel.currentEpisodes.map(\.name),
+                    selectedEpisodeIndex: viewModel.selectedEpisodeIndex,
+                    onSelectEpisode: selectPlayerEpisode,
                     systemController: sharedSystemController,
                     vlcController: sharedVLCController,
                     onCloseRequested: closeMacFullScreenOverlay,
@@ -209,6 +215,9 @@ struct DetailView: View {
                     onPlaybackEnded: playNextEpisodeIfNeeded,
                     canPlayNext: canPlayNextEpisode,
                     onPlayNext: playNextEpisodeIfNeeded,
+                    episodeTitles: viewModel.currentEpisodes.map(\.name),
+                    selectedEpisodeIndex: viewModel.selectedEpisodeIndex,
+                    onSelectEpisode: selectPlayerEpisode,
                     systemController: sharedSystemController,
                     vlcController: sharedVLCController,
                     onCloseRequested: {
@@ -575,12 +584,7 @@ struct DetailView: View {
                 episodes: viewModel.currentEpisodes,
                 selectedIndex: viewModel.selectedEpisodeIndex,
                 onSelect: { index in
-                    withAnimation {
-                        viewModel.selectEpisode(index: index)
-                    }
-                    if historyRecordExists {
-                        saveHistoryForCurrentEpisode()
-                    }
+                    selectPlayerEpisode(index)
                 }
             )
         }
@@ -706,6 +710,14 @@ struct DetailView: View {
         refreshCollectState()
     }
     
+    /// Both the detail list and player panel go through the real resolver/history path.
+    private func selectPlayerEpisode(_ index: Int) {
+        guard viewModel.currentEpisodes.indices.contains(index),
+              index != viewModel.selectedEpisodeIndex else { return }
+        withAnimation { viewModel.selectEpisode(index: index) }
+        if historyRecordExists { saveHistoryForCurrentEpisode() }
+    }
+
     private func playNextEpisodeIfNeeded() {
         var moved = false
         withAnimation {
@@ -789,6 +801,9 @@ struct FullScreenPlayerView: View {
     var onPlaybackEnded: (() -> Void)? = nil
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
+    var episodeTitles: [String] = []
+    var selectedEpisodeIndex: Int = 0
+    var onSelectEpisode: ((Int) -> Void)? = nil
     var systemController: SystemPlayerSessionController? = nil
     var vlcController: VLCPlayerController? = nil
     var onCloseRequested: (() -> Void)? = nil
@@ -827,6 +842,9 @@ struct FullScreenPlayerView: View {
             },
             canPlayNext: canPlayNext,
             onPlayNext: onPlayNext,
+            episodeTitles: episodeTitles,
+            selectedEpisodeIndex: selectedEpisodeIndex,
+            onSelectEpisode: onSelectEpisode,
             systemController: systemController,
             vlcController: vlcController,
             isFullScreenPresentation: true,

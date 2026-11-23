@@ -288,6 +288,27 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         applyVolume()
     }
 
+    private var fillsVideo = false
+    private var appliedVideoCrop: String?
+
+    func setVideoFill(_ fill: Bool) {
+        fillsVideo = fill
+        updateVideoCrop()
+    }
+
+    private func updateVideoCrop() {
+        let size = lastDrawableContainerSize
+        let crop: String? = fillsVideo && size.width > 0 && size.height > 0
+            ? "\(Int(size.width.rounded())):\(Int(size.height.rounded()))" : nil
+        guard crop != appliedVideoCrop else { return }
+        appliedVideoCrop = crop
+        if let crop {
+            crop.withCString { mediaPlayer.videoCropGeometry = UnsafeMutablePointer(mutating: $0) }
+        } else {
+            mediaPlayer.videoCropGeometry = nil
+        }
+    }
+
     func toggleMute() {
         if volume == 0 {
             let restored = lastNonZeroVolume > 0 ? lastNonZeroVolume : Self.defaultVolume
@@ -307,6 +328,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         lastAttachedContainer = container
         lastDrawableContainerIdentifier = containerIdentifier
         lastDrawableContainerSize = containerSize
+        updateVideoCrop()
         let shouldRebind = containerChanged || (sizeChanged && canRebindForSizeChange) || persistentDrawableView.superview !== container || mediaPlayer.drawable == nil
 
         if persistentDrawableView.superview !== container {
@@ -351,6 +373,7 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
         lastAttachedContainer = container
         lastDrawableContainerIdentifier = containerIdentifier
         lastDrawableContainerSize = containerSize
+        updateVideoCrop()
         let shouldRebind = containerChanged || (sizeChanged && canRebindForSizeChange) || persistentDrawableView.superview !== container || mediaPlayer.drawable == nil
 
         if persistentDrawableView.superview !== container {
@@ -720,6 +743,8 @@ final class VLCPlayerController: NSObject, ObservableObject, VLCMediaPlayerDeleg
     }
 
     private func handlePlayingState() {
+        appliedVideoCrop = nil
+        updateVideoCrop()
         cancelPendingVodBufferingConfirmation()
         isInBufferingState = false
         cancelDelayedPreparingIndicator()
@@ -847,6 +872,9 @@ struct VLCVodPlayerView: View {
     var onPortraitFullScreen: (() -> Void)? = nil
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
+    var episodeTitles: [String] = []
+    var selectedEpisodeIndex: Int = 0
+    var onSelectEpisode: ((Int) -> Void)? = nil
     var sharedController: VLCPlayerController? = nil
     @StateObject private var ownedController = VLCPlayerController()
     /// 是否作为全屏播放器呈现（显示顶部返回栏，双击语义切换）。
@@ -868,6 +896,7 @@ struct VLCVodPlayerView: View {
     }
     
     @EnvironmentObject private var danmaku: VODDanmakuStore
+    @AppStorage("player.videoFills") private var fillsVideo = false
     @State private var showDanmaku = false
     var body: some View {
         ZStack {
@@ -906,6 +935,8 @@ struct VLCVodPlayerView: View {
                     .toolbar { Button("关闭") { showDanmaku = false } }
             }
         }
+        .onAppear { controller.setVideoFill(fillsVideo) }
+        .onChange(of: fillsVideo) { controller.setVideoFill($0) }
         .onChange(of: controller.currentTimeSeconds) { danmaku.updatePlaybackTime($0) }
 
         #if os(iOS)
@@ -915,7 +946,9 @@ struct VLCVodPlayerView: View {
                 rate: Double(controller.playbackRate), canNext: canPlayNext,
                 togglePlayback: { togglePlaybackWithOSD() }, next: { onPlayNext?() }, seek: { controller.seek(to: $0) },
                 setRate: { controller.setPlaybackRate(Float($0)) }, toggleFullscreen: { onToggleFullScreen?() },
-                danmaku: { showDanmaku = true })
+                danmaku: { showDanmaku = true },
+                episodeTitles: episodeTitles, selectedEpisodeIndex: selectedEpisodeIndex, selectEpisode: onSelectEpisode,
+                fillsVideo: fillsVideo, setFillsVideo: { fillsVideo = $0; controller.setVideoFill($0) })
         }
         #else
         #if os(iOS)
@@ -2055,6 +2088,9 @@ struct VLCVodPlayerView: View {
     var onPortraitFullScreen: (() -> Void)? = nil
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
+    var episodeTitles: [String] = []
+    var selectedEpisodeIndex: Int = 0
+    var onSelectEpisode: ((Int) -> Void)? = nil
     var isFullScreenPresentation: Bool = false
     var fullScreenTitle: String = ""
 
@@ -2068,6 +2104,9 @@ struct VLCVodPlayerView: View {
             onPortraitFullScreen: onPortraitFullScreen,
             canPlayNext: canPlayNext,
             onPlayNext: onPlayNext,
+            episodeTitles: episodeTitles,
+            selectedEpisodeIndex: selectedEpisodeIndex,
+            onSelectEpisode: onSelectEpisode,
             isFullScreenPresentation: isFullScreenPresentation,
             fullScreenTitle: fullScreenTitle
         )

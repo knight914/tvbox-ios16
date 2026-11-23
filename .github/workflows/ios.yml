@@ -177,8 +177,8 @@ jobs:
           /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "build/Payload/$APP_NAME/Info.plist" || true
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "build/Payload/$APP_NAME/Info.plist")" = xyz.appinstall.nov.carbon.lam
           test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "build/Payload/$APP_NAME/Info.plist")" = 16.4
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "build/Payload/$APP_NAME/Info.plist")" = 1.0.8
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "build/Payload/$APP_NAME/Info.plist")" = 6
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "build/Payload/$APP_NAME/Info.plist")" = 1.0.9
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "build/Payload/$APP_NAME/Info.plist")" = 7
           lipo -archs "build/Payload/$APP_NAME/TVBox" | grep -w arm64
           echo "=== Payload 结构 ==="
           ls -la "build/Payload/$APP_NAME"
@@ -200,10 +200,10 @@ jobs:
 
       - name: Complete corresponding source archive
         run: |
-          git archive --format=tar.gz HEAD > build/TVBox-1.0.8-build6-corresponding-source.tar.gz
+          git archive --format=tar.gz HEAD > build/TVBox-1.0.9-build7-corresponding-source.tar.gz
       - name: Upload corresponding source
         uses: actions/upload-artifact@v4
         with:
           name: TVBox-corresponding-source
-          path: build/TVBox-1.0.8-build6-corresponding-source.tar.gz
+          path: build/TVBox-1.0.9-build7-corresponding-source.tar.gz
           if-no-files-found: error

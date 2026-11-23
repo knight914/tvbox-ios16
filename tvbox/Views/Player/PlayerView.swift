@@ -10,12 +10,13 @@ import UIKit
 /// 跨平台播放器：macOS 使用 AVPlayerView，避免 SwiftUI.VideoPlayer 在 macOS 的崩溃问题
 struct PlatformVideoPlayer: View {
     let player: AVPlayer
+    var fillsVideo: Bool = false
 
     var body: some View {
         #if os(macOS)
-        MacOSPlayerView(player: player)
+        MacOSPlayerView(player: player, fillsVideo: fillsVideo)
         #else
-        ControlsFreePlayerView(player: player)
+        ControlsFreePlayerView(player: player, fillsVideo: fillsVideo)
         #endif
     }
 }
@@ -28,12 +29,13 @@ struct PlatformVideoPlayer: View {
 /// 本文件的自绘 UI 提供（右上角常驻全屏按钮 + 底部控制条 + 手势层）。
 private struct ControlsFreePlayerView: UIViewControllerRepresentable {
     let player: AVPlayer
+    var fillsVideo: Bool = false
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
         controller.player = player
         controller.showsPlaybackControls = false
-        controller.videoGravity = .resizeAspect
+        controller.videoGravity = fillsVideo ? .resizeAspectFill : .resizeAspect
         return controller
     }
 
@@ -41,6 +43,7 @@ private struct ControlsFreePlayerView: UIViewControllerRepresentable {
         if uiView.player !== player {
             uiView.player = player
         }
+        uiView.videoGravity = fillsVideo ? .resizeAspectFill : .resizeAspect
         uiView.showsPlaybackControls = false
     }
 
@@ -53,17 +56,19 @@ private struct ControlsFreePlayerView: UIViewControllerRepresentable {
 #if os(macOS)
 private struct MacOSPlayerView: NSViewRepresentable {
     let player: AVPlayer
+    var fillsVideo: Bool = false
     
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.controlsStyle = .none
         view.showsFullScreenToggleButton = false
-        view.videoGravity = .resizeAspect
+        view.videoGravity = fillsVideo ? .resizeAspectFill : .resizeAspect
         view.player = player
         return view
     }
     
     func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        nsView.videoGravity = fillsVideo ? .resizeAspectFill : .resizeAspect
         if nsView.player !== player {
             nsView.player = player
         }
@@ -116,6 +121,9 @@ struct PlayerView: View {
     var onPortraitFullScreen: (() -> Void)? = nil
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
+    var episodeTitles: [String] = []
+    var selectedEpisodeIndex: Int = 0
+    var onSelectEpisode: ((Int) -> Void)? = nil
     var systemController: SystemPlayerSessionController? = nil
     var vlcController: VLCPlayerController? = nil
     /// 是否作为全屏播放器呈现。
@@ -151,6 +159,9 @@ struct PlayerView: View {
                     onPortraitFullScreen: onPortraitFullScreen,
                     canPlayNext: canPlayNext,
                     onPlayNext: onPlayNext,
+                    episodeTitles: episodeTitles,
+                    selectedEpisodeIndex: selectedEpisodeIndex,
+                    onSelectEpisode: onSelectEpisode,
                     sharedController: systemController,
                     isFullScreenPresentation: isFullScreenPresentation,
                     fullScreenTitle: fullScreenTitle
@@ -165,6 +176,9 @@ struct PlayerView: View {
                     onPortraitFullScreen: onPortraitFullScreen,
                     canPlayNext: canPlayNext,
                     onPlayNext: onPlayNext,
+                    episodeTitles: episodeTitles,
+                    selectedEpisodeIndex: selectedEpisodeIndex,
+                    onSelectEpisode: onSelectEpisode,
                     sharedController: vlcController,
                     isFullScreenPresentation: isFullScreenPresentation,
                     fullScreenTitle: fullScreenTitle
@@ -203,6 +217,9 @@ struct AVPlayerContentView: View {
     var onPortraitFullScreen: (() -> Void)? = nil
     var canPlayNext: Bool = false
     var onPlayNext: (() -> Void)? = nil
+    var episodeTitles: [String] = []
+    var selectedEpisodeIndex: Int = 0
+    var onSelectEpisode: ((Int) -> Void)? = nil
     var sharedController: SystemPlayerSessionController? = nil
     /// 是否作为全屏播放器呈现（显示顶部返回栏，双击语义切换）。
     var isFullScreenPresentation: Bool = false
@@ -230,6 +247,7 @@ struct AVPlayerContentView: View {
     @State private var draggingSeconds: Double = 0
     @State private var playerObservers: [NSKeyValueObservation] = []
     
+    @AppStorage("player.videoFills") private var fillsVideo = false
     @State private var videoZoomScale: CGFloat = 1.0
 
     @EnvironmentObject private var danmaku: VODDanmakuStore
@@ -238,7 +256,7 @@ struct AVPlayerContentView: View {
         ZStack {
             Group {
                 if let player = player {
-                    PlatformVideoPlayer(player: player)
+                    PlatformVideoPlayer(player: player, fillsVideo: fillsVideo)
                         .overlay { VODDanmakuOverlay(store: danmaku) }
         .sheet(isPresented: $showDanmaku) {
             NavigationStack {
@@ -308,7 +326,9 @@ struct AVPlayerContentView: View {
                 playing: isPlaying, time: currentTime, duration: duration, rate: Double(rate), canNext: canPlayNext,
                 togglePlayback: { togglePlayPause() }, next: { onPlayNext?() }, seek: { seek(to: $0) },
                 setRate: { setPlaybackRate(Float($0)) }, toggleFullscreen: { onToggleFullScreen?() },
-                danmaku: { showDanmaku = true })
+                danmaku: { showDanmaku = true },
+                episodeTitles: episodeTitles, selectedEpisodeIndex: selectedEpisodeIndex, selectEpisode: onSelectEpisode,
+                fillsVideo: fillsVideo, setFillsVideo: { fillsVideo = $0 })
         }
         #else
         #if os(iOS)
