@@ -1,5 +1,5 @@
 import XCTest
-@testable import tvbox
+@testable import TVBox
 
 final class VODDanmakuTests: XCTestCase {
     private func parse(_ text: String) throws -> [VODDanmaku] {

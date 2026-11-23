@@ -691,6 +691,14 @@ class ApiConfig: ObservableObject {
                     group.addTask {
                         do {
                             let content = try await fetchPlaylist(target.url)
+                            if content.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTM3U") {
+                                let header = content.components(separatedBy: .newlines).first ?? ""
+                                let raw = ImportedPlaylist.attribute("x-tvg-url", in: header).isEmpty ? ImportedPlaylist.attribute("url-tvg", in: header) : ImportedPlaylist.attribute("x-tvg-url", in: header)
+                                if let value = raw.components(separatedBy: ",").first, !value.isEmpty,
+                                   let epg = URL(string: value, relativeTo: URL(string: target.url))?.absoluteURL.absoluteString {
+                                    await MainActor.run { UserDefaults.standard.set(epg, forKey: "xmltv_url") }
+                                }
+                            }
                             return (target.order, content)
                         } catch {
                             // Do not log private playlist URLs or errors containing them.
@@ -903,6 +911,7 @@ class ApiConfig: ObservableObject {
     
     /// 设置主页源
     func setHomeSource(_ source: SourceBean) {
+        guard source.isSupportedInSwift else { return }
         self.homeSourceBean = source
         UserDefaults.standard.set(source.key, forKey: HawkConfig.HOME_API)
     }

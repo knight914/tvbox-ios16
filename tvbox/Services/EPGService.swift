@@ -22,6 +22,9 @@ final class XMLTVParser: NSObject, XMLParserDelegate {
         return formatter.date(from: value)
     }
     static func parse(_ data: Data) throws -> [XMLTVProgramme] {
+        if let text = String(data: data, encoding: .utf8), text.contains("<!ENTITY") {
+            throw URLError(.cannotDecodeContentData)
+        }
         let delegate = XMLTVParser()
         let parser = XMLParser(data: data)
         parser.shouldResolveExternalEntities = false
