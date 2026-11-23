@@ -240,10 +240,6 @@ struct AVPlayerContentView: View {
                 if let player = player {
                     PlatformVideoPlayer(player: player)
                         .overlay { VODDanmakuOverlay(store: danmaku) }
-        .overlay(alignment: .topLeading) {
-            Button("弹幕") { showDanmaku = true }
-                .buttonStyle(.bordered).padding(8)
-        }
         .sheet(isPresented: $showDanmaku) {
             NavigationStack {
                 VODDanmakuSettingsView(store: danmaku)
@@ -429,6 +425,10 @@ struct AVPlayerContentView: View {
             .frame(width: 1, height: 1)
             .opacity(0.01)
             .allowsHitTesting(false)
+        }
+        .overlay(alignment: .topLeading) {
+            Button("弹幕") { showDanmaku = true }
+                .buttonStyle(.bordered).padding(8)
         }
         .onContinuousHover { phase in
             switch phase {

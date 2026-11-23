@@ -899,10 +899,6 @@ struct VLCVodPlayerView: View {
             }
         }
         .overlay { VODDanmakuOverlay(store: danmaku) }
-        .overlay(alignment: .topLeading) {
-            Button("弹幕") { showDanmaku = true }
-                .buttonStyle(.bordered).padding(8)
-        }
         .sheet(isPresented: $showDanmaku) {
             NavigationStack {
                 VODDanmakuSettingsView(store: danmaku)
@@ -1002,6 +998,10 @@ struct VLCVodPlayerView: View {
             .frame(width: 1, height: 1)
             .opacity(0.01)
             .allowsHitTesting(false)
+        }
+        .overlay(alignment: .topLeading) {
+            Button("弹幕") { showDanmaku = true }
+                .buttonStyle(.bordered).padding(8)
         }
         .onContinuousHover { phase in
             switch phase {
@@ -1556,7 +1556,13 @@ struct VLCLivePlayerView: View {
         .onChange(of: isPaused) { paused in
             if paused { controller.mediaPlayer.pause() } else { controller.mediaPlayer.play() }
         }
+        .onChange(of: controller.isPlaying) { playing in
+            if controller.mediaPlayer.state != .opening && controller.mediaPlayer.state != .buffering {
+                isPaused = !playing
+            }
+        }
         .onAppear {
+            isPaused = false
             startPlayback()
             wakeUpControls()
         }
