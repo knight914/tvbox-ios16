@@ -66,6 +66,9 @@ final class DirectDanmakuBridge: NSObject, URLSessionTaskDelegate {
             context.evaluateScript(script, withSourceURL: url)
         }
     }
+    #if DEBUG
+    var testingContext: JSContext { context }
+    #endif
     func call(_ function: String, _ parameters: [String: Any]) async throws -> String {
         guard !stopped, ["searchDanmu", "getDetailById", "getCommentsById", "getDanmuWithSegmentTime"].contains(function) else { throw CancellationError() }
         serial += 1

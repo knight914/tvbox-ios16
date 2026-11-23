@@ -39,6 +39,22 @@ final class DirectDanmakuTests: XCTestCase {
         XCTAssertTrue(store.enabled)
         store.clear(); XCTAssertTrue(store.comments.isEmpty)
     }
+    @MainActor func testRealTimerAndClear() async throws {
+        let host = DirectDanmakuBridge(); defer { host.cancel() }
+        let c = host.testingContext
+        c.evaluateScript("var fired=false;var canceled=false;setTimeout(()=>fired=true,120);const canceledTimer=setTimeout(()=>canceled=true,80);clearTimeout(canceledTimer);")
+        XCTAssertNil(c.exception)
+        XCTAssertFalse(c.evaluateScript("fired")!.toBool())
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertTrue(c.evaluateScript("fired")!.toBool())
+        XCTAssertFalse(c.evaluateScript("canceled")!.toBool())
+    }
+    @MainActor func testBundledBinaryDeflateRoundTrip() throws {
+        let host = DirectDanmakuBridge(); defer { host.cancel() }
+        let c = host.testingContext
+        XCTAssertEqual(c.evaluateScript("init_pako_esm();utf8BytesToString(pako_esm_exports.inflate(pako_esm_exports.deflate(new Uint8Array([65,66,67]))))")?.toString(), "ABC")
+        XCTAssertNil(c.exception)
+    }
     @MainActor func testStorageContractIsAsyncAndSessionLocal() throws {
         let c = try XCTUnwrap(JSContext()); c.evaluateScript(DirectDanmakuBridge.bootstrap)
         XCTAssertNil(c.exception)
