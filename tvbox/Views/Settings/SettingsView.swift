@@ -419,6 +419,7 @@ struct SettingsView: View {
                 LazyVStack(spacing: 12) {
                     ForEach(filteredSources) { source in
                         Button {
+                            guard source.isSupportedInSwift else { return }
                             apiConfig.setHomeSource(source)
                             appState.currentSourceKey = source.key
                         } label: {
@@ -442,7 +443,7 @@ struct SettingsView: View {
                                             )
                                         
                                         if !source.isSupportedInSwift {
-                                            Text("暂不支持")
+                                            Text("iOS 不支持 JAR/Spider")
                                                 .font(.system(size: 10, weight: .medium))
                                                 .foregroundColor(.red.opacity(0.8))
                                                 .padding(.horizontal, 6)

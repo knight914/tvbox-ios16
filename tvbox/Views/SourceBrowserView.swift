@@ -83,6 +83,7 @@ struct SourceBrowserView: View {
     private func sourceChip(_ source: SourceBean) -> some View {
         let isSelected = source.key == viewModel.selectedSource?.key
         return Button {
+            guard source.isSupportedInSwift else { return }
             Task { await viewModel.selectSource(source) }
         } label: {
             HStack(spacing: 6) {
@@ -92,7 +93,7 @@ struct SourceBrowserView: View {
                     .lineLimit(1)
 
                 if !source.isSupportedInSwift {
-                    Text("JAR")
+                    Text("JAR 不支持")
                         .font(.system(size: 9, weight: .heavy))
                         .foregroundColor(.white.opacity(0.5))
                         .padding(.horizontal, 4)

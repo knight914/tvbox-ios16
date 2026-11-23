@@ -37,8 +37,20 @@ class ApiConfig: ObservableObject {
     }
     private var rawConfigCache: [String: RawConfigCacheEntry] = [:]
     
-    private init() {}
+    private init() {
+        if let data = UserDefaults.standard.data(forKey: "imported_live_groups"), let groups = try? JSONDecoder().decode([LiveChannelGroup].self, from: data) { liveChannelGroupList = groups }
+    }
     
+    func importPlaylist(_ text: String, base: URL? = nil) async throws {
+        let parsed = await Task.detached(priority: .userInitiated) { ImportedPlaylist.parse(text, base: base) }.value
+        guard !parsed.groups.isEmpty else { throw ConfigError.parseError("未找到可播放的 M3U 频道") }
+        liveParseTask?.cancel()
+        activeLoadToken = UUID()
+        if !parsed.epgURL.isEmpty { UserDefaults.standard.set(parsed.epgURL, forKey: "xmltv_url") }
+        liveChannelGroupList = parsed.groups
+        if let data = try? JSONEncoder().encode(parsed.groups) { UserDefaults.standard.set(data, forKey: "imported_live_groups") }
+    }
+
     /// 加载远程配置
     func loadConfig(from apiUrl: String) async throws {
         try await loadConfigs(vodApiUrl: apiUrl, liveApiUrl: apiUrl)
@@ -143,7 +155,9 @@ class ApiConfig: ObservableObject {
         nextVisited.insert(visitKey)
         
         let jsonStr = try await fetchConfigText(from: normalizedUrl)
-        
+        if jsonStr.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTM3U") {
+            return (AppConfigData(lives: [.init(url: normalizedUrl)]), normalizedUrl)
+        }
         let (cleanedJson, decodedConfig, multiRepo) = await Self.decodeConfigText(jsonStr)
         try Task.checkCancellation()
         if let config = decodedConfig, config.hasUsableContent {
@@ -679,7 +693,7 @@ class ApiConfig: ObservableObject {
                             let content = try await fetchPlaylist(target.url)
                             return (target.order, content)
                         } catch {
-                            print("加载直播源失败: \(target.url), error: \(error)")
+                            // Do not log private playlist URLs or errors containing them.
                             return (target.order, nil)
                         }
                     }
@@ -696,7 +710,14 @@ class ApiConfig: ObservableObject {
             
             for (_, content) in fetchedContents.sorted(by: { $0.0 < $1.0 }) {
                 guard !Task.isCancelled else { return [] }
-                parseLiveContent(content, into: &mergedGroups)
+                if content.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTM3U") {
+                    let imported = ImportedPlaylist.parse(content)
+                    for group in imported.groups {
+                        for channel in group.channels {
+                            mergedGroups.append(named: channel.channelName, urls: channel.channelUrls, logo: channel.logo, to: group.groupName, tvgID: channel.tvgID)
+                        }
+                    }
+                } else { parseLiveContent(content, into: &mergedGroups) }
             }
         }
         
@@ -783,7 +804,7 @@ class ApiConfig: ObservableObject {
         private var channelIndexes: [[String: Int]] = []
         private var urlSets: [[Set<String>]] = []
 
-        mutating func append(named name: String, urls: [String], logo: String, to groupName: String) {
+        mutating func append(named name: String, urls: [String], logo: String, to groupName: String, tvgID: String? = nil) {
             let name = ApiConfig.normalizeChannelName(name)
             let urls = ApiConfig.uniqueLiveUrls(urls)
             guard !name.isEmpty, !urls.isEmpty else { return }
@@ -814,6 +835,7 @@ class ApiConfig: ObservableObject {
                 var channel = LiveChannelItem(channelName: name, channelIndex: index)
                 channel.channelUrls = urls
                 channel.logo = logo
+                channel.tvgID = tvgID
                 groups[groupIndex].channels.append(channel)
                 channelIndexes[groupIndex][name] = index
                 urlSets[groupIndex].append(Set(urls))

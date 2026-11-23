@@ -867,6 +867,8 @@ struct VLCVodPlayerView: View {
         sharedController ?? ownedController
     }
     
+    @StateObject private var danmaku = VODDanmakuStore()
+    @State private var showDanmaku = false
     var body: some View {
         ZStack {
             VLCDrawableView(controller: controller)
@@ -896,6 +898,20 @@ struct VLCVodPlayerView: View {
                     .allowsHitTesting(false)
             }
         }
+        .overlay { VODDanmakuOverlay(store: danmaku) }
+        .overlay(alignment: .topLeading) {
+            Button("弹幕") { showDanmaku = true }
+                .buttonStyle(.bordered).padding(8)
+        }
+        .sheet(isPresented: $showDanmaku) {
+            NavigationStack {
+                VODDanmakuSettingsView(store: danmaku)
+                    .navigationTitle("弹幕")
+                    .toolbar { Button("关闭") { showDanmaku = false } }
+            }
+        }
+        .onChange(of: controller.currentTimeSeconds) { danmaku.updatePlaybackTime($0) }
+        .onChange(of: urlString) { _ in danmaku.clear() }
         #if os(iOS)
         .overlay {
             PlayerGestureLayer(
@@ -1458,6 +1474,7 @@ struct VLCVodPlayerView: View {
 struct VLCLivePlayerView: View {
     let urlString: String
     var activityToken: Int = 0
+    @Binding var isPaused: Bool
     var onPlaybackFailed: (() -> Void)? = nil
     var onToggleFullScreen: (() -> Void)? = nil
     @StateObject private var controller = VLCPlayerController()
@@ -1535,6 +1552,9 @@ struct VLCLivePlayerView: View {
             .frame(width: 1, height: 1)
             .opacity(0.01)
             .allowsHitTesting(false)
+        }
+        .onChange(of: isPaused) { paused in
+            if paused { controller.mediaPlayer.pause() } else { controller.mediaPlayer.play() }
         }
         .onAppear {
             startPlayback()

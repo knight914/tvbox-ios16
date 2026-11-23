@@ -232,12 +232,28 @@ struct AVPlayerContentView: View {
     
     @State private var videoZoomScale: CGFloat = 1.0
 
+    @StateObject private var danmaku = VODDanmakuStore()
+    @State private var showDanmaku = false
     var body: some View {
         ZStack {
             Group {
                 if let player = player {
                     PlatformVideoPlayer(player: player)
-                        #if os(iOS)
+                        .overlay { VODDanmakuOverlay(store: danmaku) }
+        .overlay(alignment: .topLeading) {
+            Button("弹幕") { showDanmaku = true }
+                .buttonStyle(.bordered).padding(8)
+        }
+        .sheet(isPresented: $showDanmaku) {
+            NavigationStack {
+                VODDanmakuSettingsView(store: danmaku)
+                    .navigationTitle("弹幕")
+                    .toolbar { Button("关闭") { showDanmaku = false } }
+            }
+        }
+        .onChange(of: currentTime) { danmaku.updatePlaybackTime($0) }
+        .onChange(of: urlString) { _ in danmaku.clear() }
+        #if os(iOS)
                         .scaleEffect(videoZoomScale)
                         #endif
                 } else {

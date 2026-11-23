@@ -44,39 +44,35 @@ class LiveViewModel: ObservableObject {
     
     /// 选择频道
     func selectChannel(_ channel: LiveChannelItem) {
+        for (groupIndex, group) in channelGroups.enumerated() {
+            if let index = group.channels.firstIndex(where: { $0.id == channel.id && $0.channelUrls == channel.channelUrls }) {
+                selectedGroupIndex = groupIndex
+                selectedChannelIndex = index
+                break
+            }
+        }
         currentChannel = channel
         loadEPG(for: channel)
     }
     
-    /// 上一个频道
-    func previousChannel() {
-        guard !channelGroups.isEmpty else { return }
-        if selectedChannelIndex > 0 {
-            selectedChannelIndex -= 1
-        } else if selectedGroupIndex > 0 {
-            selectedGroupIndex -= 1
-            selectedChannelIndex = channelGroups[selectedGroupIndex].channels.count - 1
+    /// Walk only playable entries, wrapping across empty groups safely.
+    func previousChannel() { stepChannel(-1) }
+    func nextChannel() { stepChannel(1) }
+
+    private func stepChannel(_ delta: Int) {
+        let entries = channelGroups.enumerated().flatMap { group, value in
+            value.channels.enumerated().map { (group, $0.offset, $0.element) }
         }
-        if let ch = channelGroups[selectedGroupIndex].channels[safe: selectedChannelIndex] {
-            selectChannel(ch)
-        }
+        guard !entries.isEmpty else { return }
+        let position = entries.firstIndex {
+            $0.0 == selectedGroupIndex && $0.1 == selectedChannelIndex
+        } ?? 0
+        let target = entries[(position + delta + entries.count) % entries.count]
+        selectedGroupIndex = target.0
+        selectedChannelIndex = target.1
+        selectChannel(target.2)
     }
-    
-    /// 下一个频道
-    func nextChannel() {
-        guard !channelGroups.isEmpty else { return }
-        let group = channelGroups[selectedGroupIndex]
-        if selectedChannelIndex < group.channels.count - 1 {
-            selectedChannelIndex += 1
-        } else if selectedGroupIndex < channelGroups.count - 1 {
-            selectedGroupIndex += 1
-            selectedChannelIndex = 0
-        }
-        if let ch = channelGroups[selectedGroupIndex].channels[safe: selectedChannelIndex] {
-            selectChannel(ch)
-        }
-    }
-    
+
     /// 切换线路
     func switchSource() {
         // `currentChannel` 为值类型，调用 mutating 方法会触发 @Published 重新发布。

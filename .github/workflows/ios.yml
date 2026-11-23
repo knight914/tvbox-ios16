@@ -5,7 +5,7 @@ name: Build unsigned IPA (TrollStore)
 on:
   workflow_dispatch:
   push:
-    branches: [fix/config-import-regression]
+    branches: [fix/live-epg-integration-20261123]
 
 permissions:
   contents: read
@@ -58,11 +58,14 @@ jobs:
           xcodebuild test -project tvbox.xcodeproj -scheme tvbox \
             -destination "platform=iOS Simulator,id=$DEVICE" \
             -only-testing:tvbox-Tests/ConfigImportTests \
+            -only-testing:tvbox-Tests/LiveNavigationTests \
+            -only-testing:tvbox-Tests/EPGImportTests \
+            -only-testing:tvbox-Tests/VODDanmakuTests \
             -parallel-testing-enabled NO -resultBundlePath ConfigImport.xcresult \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee test.log
           xcrun xcresulttool get test-results summary --path ConfigImport.xcresult --format json > test-summary.json
           cat test-summary.json
-          python3 -c 'import json; s=json.load(open("test-summary.json")); assert s["passedTests"] >= 3 and s["failedTests"] == 0 and s["skippedTests"] == 0, s'
+          python3 -c 'import json; s=json.load(open("test-summary.json")); assert s["passedTests"] >= 17 and s["failedTests"] == 0 and s["skippedTests"] == 0, s'
 
       - name: Upload simulator evidence
         if: always()

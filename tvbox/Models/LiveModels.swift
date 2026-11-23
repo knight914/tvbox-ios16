@@ -37,6 +37,7 @@ struct LiveChannelItem: Codable, Identifiable, Hashable {
     var sourceNum: Int { channelUrls.count }
     /// 台标地址（预留）。
     var logo: String = ""
+    var tvgID: String? = nil
     
     init(channelName: String = "", channelIndex: Int = 0) {
         self.channelName = channelName

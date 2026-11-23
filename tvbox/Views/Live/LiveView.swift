@@ -1,5 +1,8 @@
 import SwiftUI
 import AVKit
+#if os(iOS)
+import UIKit
+#endif
 #if os(macOS)
 import AppKit
 #endif
@@ -14,6 +17,13 @@ struct LiveView: View {
     @EnvironmentObject var appState: AppState
     /// 系统播放器实例（仅在选择系统内核时使用）。
     @State private var avPlayer: AVPlayer?
+    @State private var isPaused = false
+    @State private var reloadToken = 0
+    @State private var showImport = false
+    @State private var showEPG = false
+    #if os(iOS)
+    @State private var previousOrientation: UIInterfaceOrientation = .portrait
+    #endif
     /// 直播播放器内核配置（新字段）。
     @AppStorage(HawkConfig.PLAY_TYPE_LIVE) private var livePlayTypeRaw = -1
     /// 兼容旧版本单播放器字段。
@@ -78,6 +88,7 @@ struct LiveView: View {
                             VLCLivePlayerView(
                                 urlString: urlString,
                                 activityToken: vlcInteractionToken,
+                                isPaused: $isPaused,
                                 onPlaybackFailed: {
                                     handlePlaybackFailure(trigger: "vlc_error")
                                 },
@@ -86,7 +97,7 @@ struct LiveView: View {
                                 }
                             )
                             .ignoresSafeArea()
-                            .id("vlc-live-\(urlString)-\(viewModel.currentChannel?.id ?? "")")
+                            .id("vlc-live-\(urlString)-\(viewModel.currentChannel?.id ?? "")-\(reloadToken)")
                         }
                     } else if let player = avPlayer {
                         PlatformVideoPlayer(player: player)
@@ -97,7 +108,15 @@ struct LiveView: View {
                     overlayUI
                 }
             }
+            .overlay(alignment: .topTrailing) {
+                HStack {
+                    Button("导入") { showImport = true }
+                    Button("节目单") { showEPG = true }
+                }.buttonStyle(.borderedProminent).padding(.trailing, 16).padding(.top, 8)
+            }
             .navigationTitle("直播")
+            .sheet(isPresented: $showImport) { LiveImportView() }
+            .sheet(isPresented: $showEPG) { EPGView(channel: viewModel.currentChannel) }
             #if os(macOS)
             .toolbar(isWindowFullScreen ? .hidden : .visible, for: .windowToolbar)
             #endif
@@ -110,6 +129,9 @@ struct LiveView: View {
             .onAppear {
                 // 首次进入时加载频道并展示频道信息卡。
                 viewModel.loadChannels()
+                if selectedEngine == .system, avPlayer == nil {
+                    playChannel(url: viewModel.currentChannel?.currentUrl)
+                }
                 wakeUpCurrentChannelInfo()
             }
             .onChange(of: viewModel.currentChannel?.currentUrl) { newValue in
@@ -135,6 +157,9 @@ struct LiveView: View {
             .onDisappear {
                 cleanupPlayer()
                 cancelChannelInfoAutoHide()
+                #if os(iOS)
+                if isWindowFullScreen { restoreLiveOrientation() }
+                #endif
                 #if os(macOS)
                 appState.exitPlayerFullScreen()
                 isWindowFullScreen = false
@@ -411,7 +436,24 @@ struct LiveView: View {
                 }
             }
             
-            // 操作按钮行
+            HStack(spacing: 0) {
+                liveControl("上一台", icon: "backward.end.fill") { viewModel.previousChannel() }
+                liveControl(isPaused ? "播放" : "暂停", icon: isPaused ? "play.fill" : "pause.fill") {
+                    isPaused.toggle()
+                    if isPaused { avPlayer?.pause() } else { avPlayer?.play() }
+                }
+                liveControl("重载", icon: "arrow.clockwise") {
+                    isPaused = false
+                    resetFailureTracking(for: viewModel.currentChannel)
+                    reloadToken += 1
+                    if selectedEngine == .system { playChannel(url: viewModel.currentChannel?.currentUrl) }
+                }
+                liveControl("下一台", icon: "forward.end.fill") { viewModel.nextChannel() }
+                liveControl(isWindowFullScreen ? "还原" : "横屏", icon: "arrow.up.left.and.arrow.down.right") {
+                    toggleWindowFullScreen()
+                }
+            }
+            // Only cycle real playlist alternatives, never fabricate routes.
             if channel.sourceNum > 1 {
                 HStack(spacing: 12) {
                     Button {
@@ -512,6 +554,23 @@ struct LiveView: View {
         #endif
     }
     
+    private func liveControl(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button {
+            wakeUpCurrentChannelInfo()
+            action()
+        } label: {
+            VStack(spacing: 5) {
+                Image(systemName: icon)
+                Text(title).font(.caption2)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .foregroundColor(.white)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+
     private func wakeUpCurrentChannelInfo() {
         withAnimation(.easeInOut(duration: 0.2)) {
             showCurrentChannelInfo = true
@@ -628,6 +687,7 @@ struct LiveView: View {
         observePlaybackFailure(for: playerItem)
         
         let newPlayer = AVPlayer(playerItem: playerItem)
+        isPaused = false
         newPlayer.play()
         avPlayer = newPlayer
     }
@@ -727,6 +787,27 @@ struct LiveView: View {
         window.toggleFullScreen(nil)
     }
     #else
-    private func toggleWindowFullScreen() {}
+    private func toggleWindowFullScreen() {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first(where: { $0.activationState == .foregroundActive }) else { return }
+        if isWindowFullScreen {
+            restoreLiveOrientation()
+        } else {
+            previousOrientation = scene.interfaceOrientation
+            isWindowFullScreen = true
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight))
+        }
+    }
+
+    private func restoreLiveOrientation() {
+        isWindowFullScreen = false
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first(where: { $0.activationState == .foregroundActive }) else { return }
+        let mask: UIInterfaceOrientationMask
+        switch previousOrientation {
+        case .landscapeLeft: mask = .landscapeLeft
+        case .landscapeRight: mask = .landscapeRight
+        default: mask = .portrait
+        }
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask))
+    }
     #endif
 }
