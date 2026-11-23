@@ -5,6 +5,7 @@ import AppKit
 
 /// 详情页 - 对应 Android 版 DetailActivity
 struct DetailView: View {
+    @StateObject private var danmaku = VODDanmakuStore()
     let video: Movie.Video
     @StateObject private var viewModel = DetailViewModel()
     @StateObject private var sharedSystemController = SystemPlayerSessionController()
@@ -107,6 +108,13 @@ struct DetailView: View {
             .padding(.bottom, 40)
         }
         .background(AppTheme.primaryGradient)
+        .environmentObject(danmaku)
+        .task(id: "\(displayVideo.id)|\(viewModel.selectedFlag)|\(viewModel.selectedEpisodeIndex)|\(viewModel.vodInfo?.name ?? displayVideo.name)") {
+            let index = viewModel.selectedEpisodeIndex
+            let episodes = viewModel.currentEpisodes
+            danmaku.setMetadata(PlaybackMetadata(title: viewModel.vodInfo?.name.isEmpty == false ? viewModel.vodInfo!.name : displayVideo.name,
+                episodeTitle: episodes.indices.contains(index) ? episodes[index].name : "", episodeIndex: index))
+        }
         .navigationTitle(displayVideo.name)
         #if os(macOS)
         .toolbar((showFullScreen || pendingMacWindowFullScreen) ? .hidden : .visible, for: .windowToolbar)
@@ -169,7 +177,7 @@ struct DetailView: View {
                     vlcController: sharedVLCController,
                     onCloseRequested: closeMacFullScreenOverlay,
                     title: fullscreenTitle
-                )
+                ).environmentObject(danmaku)
                 .ignoresSafeArea()
                 .transition(.opacity)
                 .zIndex(2)
@@ -208,7 +216,7 @@ struct DetailView: View {
                     },
                     title: fullscreenTitle,
                     landscape: fullScreenLandscape
-                )
+                ).environmentObject(danmaku)
             }
         }
         #endif
@@ -772,11 +780,7 @@ struct DetailView: View {
 
 /// 全屏播放器
 ///
-/// 方向策略（由 `landscape` 参数决定，对应控制条上的两个全屏按钮）：
-/// - 横屏全屏（双保险）：呈现后 requestGeometryUpdate 请求系统转横屏（未开竖排锁时自动横屏）；
-///   若系统拒绝旋转（如控制中心竖排方向锁定开启），则把播放器内容旋转 90°
-///   铺满竖屏画面——用户横持手机即为标准横屏效果，保证任何情况下都能"全屏"。
-/// - 竖屏全屏：请求系统转回竖屏，画面竖向铺满整屏，适合竖屏视频。
+/// Native scene fullscreen: video, controls and sheets use one coordinate space.
 struct FullScreenPlayerView: View {
     let urlString: String
     var startPosition: Double = 0
@@ -792,31 +796,12 @@ struct FullScreenPlayerView: View {
     /// 是否横屏全屏（false = 竖屏全屏）。
     var landscape: Bool = true
     @Environment(\.dismiss) private var dismiss
-    /// 当前界面方向是否已是横屏（决定是否使用旋转兜底布局）。
-    @State private var isLandscapeInterface = false
 
     var body: some View {
         #if os(iOS)
         fullScreenBody
-            .onAppear {
-                refreshInterfaceOrientation()
-                if landscape {
-                    Self.requestOrientation(.landscapeRight)
-                    // 稍后复查一次：若系统已转横屏，切换到原生横屏布局。
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 400_000_000)
-                        refreshInterfaceOrientation()
-                    }
-                } else {
-                    Self.requestOrientation(.portrait)
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
-                refreshInterfaceOrientation()
-            }
-            .onDisappear {
-                Self.requestOrientation(.portrait)
-            }
+            .onAppear { Self.requestOrientation(landscape ? .landscapeRight : .portrait) }
+            .onDisappear { Self.requestOrientation(.portrait) }
         #else
         ZStack {
             Color.black.ignoresSafeArea()
@@ -849,57 +834,17 @@ struct FullScreenPlayerView: View {
     }
 
     #if os(iOS)
-    @ViewBuilder
     private var fullScreenBody: some View {
-        GeometryReader { geo in
-            ZStack {
-                Color.black.ignoresSafeArea()
-
-                if landscape && isLandscapeInterface {
-                    // 横屏全屏 + 系统已转横屏：原生铺满。
-                    playerContent
-                        .frame(width: geo.size.width, height: geo.size.height)
-                } else if landscape {
-                    // 横屏全屏 + 竖屏兜底：内容旋转 90°，宽高互换铺满整屏。
-                    playerContent
-                        .frame(width: geo.size.height, height: geo.size.width)
-                        .rotationEffect(.degrees(90))
-                        .position(x: geo.size.width / 2, y: geo.size.height / 2)
-                } else {
-                    // 竖屏全屏：保持竖屏，画面竖向铺满整屏（竖屏视频即全屏效果）。
-                    playerContent
-                        .frame(width: geo.size.width, height: geo.size.height)
-                }
-            }
-            .ignoresSafeArea()
+        ZStack {
+            Color.black.ignoresSafeArea()
+            playerContent.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .statusBarHidden(true)
     }
 
-    private func refreshInterfaceOrientation() {
-        switch Self.currentInterfaceOrientation() {
-        case .landscapeLeft, .landscapeRight:
-            isLandscapeInterface = true
-        default:
-            isLandscapeInterface = false
-        }
-    }
-
-    private static func currentInterfaceOrientation() -> UIInterfaceOrientation? {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first(where: { $0.activationState == .foregroundActive })?
-            .interfaceOrientation
-    }
-
-    /// 请求系统切换到目标方向（尽力而为；被拒绝时由竖屏兜底布局接管）。
     @MainActor
     static func requestOrientation(_ target: UIInterfaceOrientationMask) {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        for scene in scenes where scene.activationState == .foregroundActive {
-            scene.requestGeometryUpdate(.iOS(interfaceOrientations: target))
-            scene.windows.forEach { $0.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations() }
-        }
+        PlaybackOrientation.request(target)
     }
     #endif
 }

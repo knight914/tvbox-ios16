@@ -232,7 +232,7 @@ struct AVPlayerContentView: View {
     
     @State private var videoZoomScale: CGFloat = 1.0
 
-    @StateObject private var danmaku = VODDanmakuStore()
+    @EnvironmentObject private var danmaku: VODDanmakuStore
     @State private var showDanmaku = false
     var body: some View {
         ZStack {
@@ -248,7 +248,7 @@ struct AVPlayerContentView: View {
             }
         }
         .onChange(of: currentTime) { danmaku.updatePlaybackTime($0) }
-        .onChange(of: urlString) { _ in danmaku.clear() }
+
         #if os(iOS)
                         .scaleEffect(videoZoomScale)
                         #endif

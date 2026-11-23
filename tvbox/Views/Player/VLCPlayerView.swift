@@ -867,7 +867,7 @@ struct VLCVodPlayerView: View {
         sharedController ?? ownedController
     }
     
-    @StateObject private var danmaku = VODDanmakuStore()
+    @EnvironmentObject private var danmaku: VODDanmakuStore
     @State private var showDanmaku = false
     var body: some View {
         ZStack {
@@ -907,7 +907,7 @@ struct VLCVodPlayerView: View {
             }
         }
         .onChange(of: controller.currentTimeSeconds) { danmaku.updatePlaybackTime($0) }
-        .onChange(of: urlString) { _ in danmaku.clear() }
+
         #if os(iOS)
         .overlay {
             PlayerGestureLayer(

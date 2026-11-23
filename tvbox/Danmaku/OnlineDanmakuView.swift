@@ -17,15 +17,30 @@ final class OnlineDanmakuModel: ObservableObject {
     private var bridge: DirectDanmakuBridge?
     private var work: Task<Void, Never>?
     private var generation = 0
+    private var scheduled: Task<Void, Never>?
+    private weak var store: VODDanmakuStore?
+    func scheduleSearch(store: VODDanmakuStore) {
+        cancel()
+        self.store = store
+        if query.isEmpty { query = store.metadata?.title ?? "" }
+        candidates = []; episodes = []
+        let ticket = generation
+        scheduled = Task { @MainActor in
+            do { try await Task.sleep(nanoseconds: 350_000_000) } catch { return }
+            guard ticket == generation else { return }
+            search()
+        }
+    }
     private var loaded = Set<Int>()
     private var segments: [[String: Any]] = []
     private var selected: Choice?
     private var rows: [VODDanmaku] = []
     private var parameters: [String: Any] {
         ["title": query, "sourceOrder": platform, "platformOrder": platform == "iqiyi" ? "qiyi" : platform,
-         "otherServer": "", "customSourceApiUrl": "", "vodServers": "", "proxyUrl": "", "vodRequestTimeout": "15000", "season": 1, "episode": 1]
+         "otherServer": "", "customSourceApiUrl": "", "vodServers": "", "proxyUrl": "", "vodRequestTimeout": "15000", "season": 1, "episode": store?.metadata?.episodeNumber ?? 1]
     }
     func cancel() {
+        scheduled?.cancel(); scheduled = nil
         generation += 1
         work?.cancel(); work = nil
         bridge?.cancel(); bridge = nil
@@ -41,12 +56,27 @@ final class OnlineDanmakuModel: ObservableObject {
         work = Task { @MainActor in
             do { try await operation(host, token) }
             catch { if token == self.generation { self.status = "请求失败：\(error.localizedDescription)（可取消后重试）" } }
-            if token == self.generation { self.busy = false }
+            if token == self.generation {
+                self.busy = false
+                self.autoMatch()
+            }
+        }
+    }
+    private var automaticDetail: String?
+    private var automaticEpisode: String?
+    private func autoMatch() {
+        guard let store, let metadata = store.metadata else { return }
+        if episodes.isEmpty, let i = PlaybackMetadata.uniqueMatch(title: query, candidates: candidates.map(\.title)), automaticDetail != candidates[i].id {
+            automaticDetail = candidates[i].id
+            details(candidates[i])
+        } else if let i = metadata.matchingEpisode(episodes.map(\.title)), automaticEpisode != episodes[i].id {
+            automaticEpisode = episodes[i].id
+            confirm(episodes[i], store: store)
         }
     }
     private func object(_ raw: String) throws -> Any { try JSONSerialization.jsonObject(with: Data(raw.utf8), options: [.fragmentsAllowed]) }
     func search() {
-        cancel(); candidates = []; episodes = []; selected = nil; rows = []; loaded = []
+        cancel(); automaticDetail = nil; automaticEpisode = nil; candidates = []; episodes = []; selected = nil; rows = []; loaded = []
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { status = "请输入片名"; return }
         status = "搜索官方候选…"
         start { host, token in
@@ -61,7 +91,7 @@ final class OnlineDanmakuModel: ObservableObject {
         }
     }
     func details(_ choice: Choice) {
-        episodes = []; status = "载入集数…"
+        episodes = []; automaticEpisode = nil; automaticDetail = choice.id; status = "载入集数…"
         start { host, token in
             var p = self.parameters; p["animeId"] = choice.value
             let raw = try await host.call("getDetailById", p)
@@ -140,9 +170,14 @@ struct OnlineDanmakuView: View {
             Section("官方直连弹幕") {
                 Picker("平台", selection: $model.platform) {
                     ForEach(OnlineDanmakuModel.platforms, id: \.0) { item in Text(item.1).tag(item.0) }
-                }.disabled(model.busy)
-                TextField("片名", text: $model.query).disabled(model.busy)
-                Button("搜索") { model.search() }.disabled(model.busy)
+                }
+                if let metadata = store.metadata {
+                    Text("\(metadata.title) · \(metadata.episodeTitle)").font(.subheadline)
+                }
+                DisclosureGroup("手动修改片名 / 重试") {
+                    TextField("片名", text: $model.query)
+                    Button("搜索") { model.search() }
+                }
                 if model.busy { ProgressView() }
                 Button("取消请求") { model.cancel() }
                 Text(model.status).font(.caption)
@@ -159,6 +194,9 @@ struct OnlineDanmakuView: View {
             }.font(.caption)
         }
         .navigationTitle("在线弹幕")
+        .onAppear { model.scheduleSearch(store: store) }
+        .onChange(of: model.platform) { _ in model.scheduleSearch(store: store) }
+        .onChange(of: store.metadata) { _ in model.scheduleSearch(store: store) }
         .alert(item: $pending) { item in
             Alert(title: Text("载入本集弹幕？"), message: Text("\(item.title)\n替换已载入弹幕，不更换视频源。"), primaryButton: .default(Text("确认载入")) { model.confirm(item, store: store) }, secondaryButton: .cancel())
         }

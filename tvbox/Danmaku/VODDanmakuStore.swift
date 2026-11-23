@@ -12,6 +12,14 @@ final class VODDanmakuStore: ObservableObject {
     @Published private(set) var playbackTime: Double = 0
     private var generation = 0
     let online = OnlineDanmakuModel()
+    @Published private(set) var metadata: PlaybackMetadata?
+    func setMetadata(_ value: PlaybackMetadata) {
+        guard metadata != value else { return }
+        clear()
+        metadata = value
+        online.query = value.title
+        online.candidates = []; online.episodes = []
+    }
 
     func updatePlaybackTime(_ seconds: Double) {
         if seconds.isFinite {

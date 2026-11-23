@@ -4,17 +4,13 @@ import Combine
 #if os(iOS)
 import UIKit
 
-/// 应用代理：声明应用支持的方向集合。
-/// 全屏播放器不在这里做方向锁定，而是自行通过
-/// UIWindowScene.requestGeometryUpdate 请求横屏；
-/// 若系统拒绝旋转（如控制中心竖排方向锁定），播放器内部会用
-/// 「内容旋转 90°」的兜底布局保证全屏效果，避免方向锁与呈现动画互相干扰。
+/// UIKit direction policy shared by live and VOD playback.
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
         supportedInterfaceOrientationsFor window: UIWindow?
     ) -> UIInterfaceOrientationMask {
-        [.portrait, .landscapeLeft, .landscapeRight]
+        PlaybackOrientation.supported
     }
 }
 #endif

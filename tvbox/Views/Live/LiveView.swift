@@ -794,7 +794,7 @@ struct LiveView: View {
         } else {
             previousOrientation = scene.interfaceOrientation
             isWindowFullScreen = true
-            scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight))
+            PlaybackOrientation.request(.landscapeRight)
         }
     }
 
@@ -807,7 +807,7 @@ struct LiveView: View {
         case .landscapeRight: mask = .landscapeRight
         default: mask = .portrait
         }
-        scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask))
+        PlaybackOrientation.request(mask)
     }
     #endif
 }
