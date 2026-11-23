@@ -22,7 +22,8 @@ struct VODDanmakuSettingsView: View {
                     .font(.caption).foregroundColor(.secondary)
             }
             Section("在线来源") {
-                Text("当前仅启用离线导入。在线搜索需独立接入已授权服务，选择片名与集数并确认后才能载入，绝不替换视频源。")
+                NavigationLink("搜索官方平台弹幕 / 选择集数") { OnlineDanmakuView(store: store) }
+                Text("选择作品与集数并确认后载入；保留本地导入，不替换视频源。")
                     .font(.caption).foregroundColor(.secondary)
             }
         }

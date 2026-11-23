@@ -5,7 +5,7 @@ name: Build unsigned IPA (TrollStore)
 on:
   workflow_dispatch:
   push:
-    branches: [fix/live-epg-integration-20261123]
+    branches: [feat/direct-danmaku-ios16-20261123]
 
 permissions:
   contents: read
@@ -61,11 +61,12 @@ jobs:
             -only-testing:tvbox-Tests/LiveNavigationTests \
             -only-testing:tvbox-Tests/EPGImportTests \
             -only-testing:tvbox-Tests/VODDanmakuTests \
+            -only-testing:tvbox-Tests/DirectDanmakuTests \
             -parallel-testing-enabled NO -resultBundlePath ConfigImport.xcresult \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee test.log
           xcrun xcresulttool get test-results summary --path ConfigImport.xcresult --format json > test-summary.json
           cat test-summary.json
-          python3 -c 'import json; s=json.load(open("test-summary.json")); assert s["passedTests"] >= 17 and s["failedTests"] == 0 and s["skippedTests"] == 0, s'
+          python3 -c 'import json; s=json.load(open("test-summary.json")); assert s["passedTests"] >= 22 and s["failedTests"] == 0 and s["skippedTests"] == 0, s'
 
       - name: Upload simulator evidence
         if: always()
@@ -191,3 +192,13 @@ jobs:
           path: build/TVBox-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
+
+      - name: Complete corresponding source archive
+        run: |
+          git archive --format=tar.gz HEAD > build/TVBox-1.0.5-corresponding-source.tar.gz
+      - name: Upload corresponding source
+        uses: actions/upload-artifact@v4
+        with:
+          name: TVBox-corresponding-source
+          path: build/TVBox-1.0.5-corresponding-source.tar.gz
+          if-no-files-found: error

@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-/// No network request, telemetry, credentials, or platform endpoint.
+/// Playback-only store: online loading uses a separate, cancelable bridge.
 @MainActor
 final class VODDanmakuStore: ObservableObject {
     @Published private(set) var comments: [VODDanmaku] = []
@@ -20,6 +20,11 @@ final class VODDanmakuStore: ObservableObject {
         comments = []
         playbackTime = 0
         offset = 0
+    }
+    func replaceOnline(_ rows: [VODDanmaku]) {
+        generation += 1
+        comments = Array(rows.prefix(VODDanmakuParser.maxComments))
+        enabled = true
     }
     /// Call from fileImporter for public XML/JSON. Selection is not persisted.
     func importFile(_ url: URL) async throws {
