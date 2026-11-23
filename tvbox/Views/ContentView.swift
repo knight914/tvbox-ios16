@@ -191,6 +191,8 @@ struct ContentView: View {
                 }
                 .tag(4)
         }
+        .toolbar(appState.liveFullscreen ? .hidden : .visible, for: .tabBar)
+        .accessibilityIdentifier("rootTabs")
         .tint(.orange)
         .onChange(of: selectedTab) { _ in
             HapticManager.shared.selection()

@@ -3,6 +3,34 @@ import XCTest
 @testable import TVBox
 
 final class ConfigImportTests: XCTestCase {
+    func testObjectExtKeepsJSONAndRoundTripsObjectShape() throws {
+        let fixture = Data(#"{"token":"fixture","nested":{"flag":true},"items":[1,"two"]}"#.utf8)
+        let ext = try JSONDecoder().decode(FlexibleExt.self, from: fixture)
+        let value = try XCTUnwrap(ext.stringValue)
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: Data(value.utf8)) as? NSDictionary,
+                       try JSONSerialization.jsonObject(with: fixture) as? NSDictionary)
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: JSONEncoder().encode(ext)) as? NSDictionary,
+                       try JSONSerialization.jsonObject(with: fixture) as? NSDictionary)
+    }
+    func testLegacyStringExtRemainsUnchanged() throws {
+        let ext = try JSONDecoder().decode(FlexibleExt.self, from: Data(#""legacy-value""#.utf8))
+        XCTAssertEqual(ext.stringValue, "legacy-value")
+    }
+    func testSpiderClassificationDoesNotClaimRuntimeSupport() {
+        for (api, label) in [("https://example.invalid/a.js?x=1", "JavaScript"), ("https://example.invalid/a.py", "Python"), ("csp_Movie", "DEX/JAR")] {
+            let source = SourceBean(api: api, type: 3)
+            XCTAssertTrue(source.typeDescription.contains(label))
+            XCTAssertFalse(source.isSupportedInSwift)
+        }
+        XCTAssertTrue(SourceBean(api: "https://example.invalid/unreachable", type: 1).isSupportedInSwift)
+    }
+    func testResponseDiagnosticsRejectEmptyHTMLAndNonJSON() {
+        for body in ["", "  ", "<!DOCTYPE html><html>blocked</html>", "not json", "[]"] {
+            XCTAssertThrowsError(try SourceService.validateResponse(body, type: 1))
+        }
+        XCTAssertNoThrow(try SourceService.validateResponse("{\"list\":[]}", type: 1))
+    }
+
     func testLargeInlinePlaylistKeepsOrderAndMergesDuplicateChannels() async throws {
         let channels = (0..<10_000).map { index in
             AppConfigData.LiveConfig.LiveChannelConfig(

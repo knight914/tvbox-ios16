@@ -31,30 +31,19 @@ struct FlexibleInt: Codable, Hashable {
 
 /// 兼容 ext 字段可能是字符串或对象
 struct FlexibleExt: Codable, Hashable {
-    let stringValue: String?
-    let dictValue: [String: AnyCodableValue]?
-    
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let str = try? container.decode(String.self) {
-            self.stringValue = str
-            self.dictValue = nil
-        } else if let dict = try? container.decode([String: AnyCodableValue].self) {
-            self.stringValue = nil
-            self.dictValue = dict
-        } else {
-            self.stringValue = nil
-            self.dictValue = nil
-        }
+    private let value: AnyCodableValue
+    var dictValue: [String: AnyCodableValue]? {
+        if case .dict(let dict) = value { return dict }
+        return nil
     }
-    
+    var stringValue: String? { value.stringValue }
+
+    init(from decoder: Decoder) throws {
+        value = try AnyCodableValue(from: decoder)
+    }
+
     func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        if let str = stringValue {
-            try container.encode(str)
-        } else if let dict = dictValue {
-            try container.encode(dict)
-        }
+        try value.encode(to: encoder)
     }
 }
 

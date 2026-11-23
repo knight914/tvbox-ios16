@@ -5,7 +5,7 @@ name: Build unsigned IPA (TrollStore)
 on:
   workflow_dispatch:
   push:
-    branches: [fix/auto-danmaku-orientation-20261123]
+    branches: [fix/fullscreen-source-build5-20261123]
 
 permissions:
   contents: read
@@ -197,10 +197,10 @@ jobs:
 
       - name: Complete corresponding source archive
         run: |
-          git archive --format=tar.gz HEAD > build/TVBox-1.0.6-corresponding-source.tar.gz
+          git archive --format=tar.gz HEAD > build/TVBox-1.0.7-corresponding-source.tar.gz
       - name: Upload corresponding source
         uses: actions/upload-artifact@v4
         with:
           name: TVBox-corresponding-source
-          path: build/TVBox-1.0.6-corresponding-source.tar.gz
+          path: build/TVBox-1.0.7-corresponding-source.tar.gz
           if-no-files-found: error

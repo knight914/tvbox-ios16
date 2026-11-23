@@ -74,7 +74,7 @@ class SourceBrowserViewModel: ObservableObject {
         refreshHomeSourceFlag()
 
         guard source.isSupportedInSwift else {
-            errorMessage = "暂不支持 JAR/蜘蛛类型源（\(source.typeDescription)），请选择其他源"
+            errorMessage = "暂不支持此运行时源（\(source.typeDescription)），请选择其他源"
             return
         }
         guard source.isHttpApi else {
@@ -83,7 +83,7 @@ class SourceBrowserViewModel: ObservableObject {
         }
 
         isLoading = true
-        defer { isLoading = false }
+        defer { if token == loadToken { isLoading = false } }
 
         do {
             let result = try await sourceService.getSort(sourceBean: source)
@@ -128,7 +128,7 @@ class SourceBrowserViewModel: ObservableObject {
 
         guard sort.id != "home" else { return }
         isLoading = true
-        defer { isLoading = false }
+        defer { if token == loadToken { isLoading = false } }
         await loadVideos(page: 1, sort: sort, token: token)
     }
 

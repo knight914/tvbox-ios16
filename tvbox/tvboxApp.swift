@@ -59,6 +59,7 @@ class AppState: ObservableObject {
     @Published var apiConfig = ApiConfig.shared
     /// 配置是否已经成功加载。控制 `ContentView` 显示主界面或首次配置页。
     @Published var isConfigLoaded = false
+    @Published var liveFullscreen = false
     /// 当前首页选中的视频源 key（用于跨页面同步）。
     @Published var currentSourceKey: String = ""
     /// 配置加载错误信息，供 UI 展示。

@@ -52,7 +52,12 @@ struct SourceBean: Codable, Identifiable, Hashable {
         switch type {
         case 0: return "XML"
         case 1: return "JSON"
-        case 3: return "JAR"
+        case 3:
+            let hint = api.lowercased().split(separator: "?").first.map(String.init) ?? ""
+            if hint.hasSuffix(".js") || hint.hasPrefix("csp_js") { return "JavaScript Spider（实验性，未启用）" }
+            if hint.hasSuffix(".py") || hint.hasPrefix("csp_py") { return "Python Spider（未支持）" }
+            if hint.hasSuffix(".jar") || hint.hasPrefix("csp_") { return "Android DEX/JAR Spider（未支持）" }
+            return "Spider（运行时未知，未支持）"
         case 4: return "Remote"
         default: return "未知"
         }

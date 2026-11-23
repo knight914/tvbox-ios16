@@ -108,12 +108,15 @@ struct LiveView: View {
                     overlayUI
                 }
             }
+            .simultaneousGesture(TapGesture().onEnded { reportUserActivity() })
             .overlay(alignment: .topTrailing) {
+                if showCurrentChannelInfo || viewModel.channelGroups.isEmpty {
                 HStack {
                     Button("导入") { showImport = true }
                     Button("节目单") { showEPG = true }
                 }.buttonStyle(.borderedProminent).padding(.trailing, 16).padding(.top, 8)
             }
+                }
             .navigationTitle("直播")
             .sheet(isPresented: $showImport) { LiveImportView() }
             .sheet(isPresented: $showEPG) { EPGView(channel: viewModel.currentChannel) }
@@ -242,6 +245,8 @@ struct LiveView: View {
                     channelDrawerToggleButton
                     Spacer()
                 }
+                .opacity(showCurrentChannelInfo ? 1 : 0)
+                .allowsHitTesting(showCurrentChannelInfo)
                 .padding(.top, 18)
                 .padding(.horizontal, 16)
                 
@@ -794,12 +799,14 @@ struct LiveView: View {
         } else {
             previousOrientation = scene.interfaceOrientation
             isWindowFullScreen = true
+            appState.liveFullscreen = true
             PlaybackOrientation.request(.landscapeRight)
         }
     }
 
     private func restoreLiveOrientation() {
         isWindowFullScreen = false
+        appState.liveFullscreen = false
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first(where: { $0.activationState == .foregroundActive }) else { return }
         let mask: UIInterfaceOrientationMask
         switch previousOrientation {

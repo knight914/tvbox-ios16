@@ -9,6 +9,20 @@ class SourceService {
     
     private init() {}
     
+    /// Transport success does not imply a compatible/reachable catalogue.
+    static func validateResponse(_ text: String, type: Int) throws {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw SourceError.parseError("服务器返回空响应，可重试或切换源") }
+        if trimmed.lowercased().hasPrefix("<!doctype html") || trimmed.lowercased().hasPrefix("<html") {
+            throw SourceError.parseError("服务器返回 HTML 网页而非源接口数据")
+        }
+        if type != 0 {
+            guard let data = text.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data),
+                  object is [String: Any] else { throw SourceError.parseError("服务器返回非 JSON 对象数据") }
+        }
+    }
+
     // MARK: - 获取分类列表
     
     /// 获取指定源的分类列表和首页推荐
@@ -55,6 +69,7 @@ class SourceService {
             jsonStr = try await network.getString(from: url)
         }
         
+        try Self.validateResponse(jsonStr, type: sourceBean.type)
         var (sorts, homeVideos) = try parseSort(jsonStr, sourceBean: sourceBean)
         
         // 当大多数推荐视频的 vod_pic 为空时（ac=class 接口常见情况），
@@ -231,6 +246,7 @@ class SourceService {
     }
     
     private func parseVideoList(_ jsonStr: String, sourceKey: String, type: Int) throws -> [Movie.Video] {
+        try Self.validateResponse(jsonStr, type: type)
         guard let data = jsonStr.data(using: .utf8) else {
             throw SourceError.parseError("无法解析数据")
         }

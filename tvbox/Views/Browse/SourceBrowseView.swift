@@ -190,6 +190,7 @@ struct SourceBrowseView: View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundColor(.yellow)
+            Button("重试") { Task { await viewModel.refresh() } }
             Text(message)
                 .font(.system(size: 13))
                 .foregroundColor(.white.opacity(0.8))
