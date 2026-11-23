@@ -927,7 +927,11 @@ struct VLCVodPlayerView: View {
                     .allowsHitTesting(false)
             }
         }
-        .overlay { VODDanmakuOverlay(store: danmaku) }
+        .overlay {
+            VODDanmakuOverlay(store: danmaku, mediaTime: {
+                max(0, Double(controller.mediaPlayer.time.intValue) / 1000)
+            })
+        }
         .sheet(isPresented: $showDanmaku) {
             NavigationStack {
                 VODDanmakuSettingsView(store: danmaku)

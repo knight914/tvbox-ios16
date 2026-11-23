@@ -1,11 +1,11 @@
 name: Build unsigned IPA (TrollStore)
 
-# 手动触发（Actions 页面点 Run workflow），或推送到 main/master 时自动构建。
+# 手动触发，或仅推送本次修复分支时构建。
 # 产物：TVBox-unsigned.ipa —— 未签名，可直接用巨魔 TrollStore 安装。
 on:
   workflow_dispatch:
   push:
-    branches: [feat/player-reference-build6-20261123]
+    branches: [fix/danmaku-overlay-build8-20261124]
 
 permissions:
   contents: read
@@ -63,12 +63,14 @@ jobs:
             -only-testing:tvbox-Tests/VODDanmakuTests \
             -only-testing:tvbox-Tests/DirectDanmakuTests \
             -only-testing:tvbox-Tests/PlaybackMatchingTests \
+            -only-testing:tvbox-Tests/DanmakuOverlayRegressionTests \
             -only-testing:tvbox-UITests/PlaybackLayoutTests \
             -parallel-testing-enabled NO -resultBundlePath ConfigImport.xcresult \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee test.log
           xcrun xcresulttool get test-results summary --path ConfigImport.xcresult --format json > test-summary.json
+          xcrun xcresulttool export attachments --path ConfigImport.xcresult --output-path canvas-evidence
           cat test-summary.json
-          python3 -c 'import json; s=json.load(open("test-summary.json")); assert s["passedTests"] >= 31 and s["failedTests"] == 0 and s["skippedTests"] == 0, s'
+          python3 -c 'import json; s=json.load(open("test-summary.json")); assert s["passedTests"] == 39 and s["failedTests"] == 0 and s["skippedTests"] == 0, s'
 
       - name: Upload simulator evidence
         if: always()
@@ -79,6 +81,7 @@ jobs:
             test.log
             test-summary.json
             ConfigImport.xcresult
+            canvas-evidence
           if-no-files-found: ignore
 
       - name: 归档构建（关闭代码签名）
@@ -177,8 +180,8 @@ jobs:
           /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "build/Payload/$APP_NAME/Info.plist" || true
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "build/Payload/$APP_NAME/Info.plist")" = xyz.appinstall.nov.carbon.lam
           test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "build/Payload/$APP_NAME/Info.plist")" = 16.4
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "build/Payload/$APP_NAME/Info.plist")" = 1.0.9
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "build/Payload/$APP_NAME/Info.plist")" = 7
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "build/Payload/$APP_NAME/Info.plist")" = 1.0.10
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "build/Payload/$APP_NAME/Info.plist")" = 8
           lipo -archs "build/Payload/$APP_NAME/TVBox" | grep -w arm64
           echo "=== Payload 结构 ==="
           ls -la "build/Payload/$APP_NAME"
@@ -200,10 +203,10 @@ jobs:
 
       - name: Complete corresponding source archive
         run: |
-          git archive --format=tar.gz HEAD > build/TVBox-1.0.9-build7-corresponding-source.tar.gz
+          git archive --format=tar.gz HEAD > build/TVBox-1.0.10-build8-corresponding-source.tar.gz
       - name: Upload corresponding source
         uses: actions/upload-artifact@v4
         with:
           name: TVBox-corresponding-source
-          path: build/TVBox-1.0.9-build7-corresponding-source.tar.gz
+          path: build/TVBox-1.0.10-build8-corresponding-source.tar.gz
           if-no-files-found: error

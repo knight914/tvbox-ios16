@@ -73,6 +73,8 @@ struct ReferencePlayerControls: View {
                                     .accessibilityIdentifier("player.episodes")
                                 button(fillsVideo ? "rectangle.fill" : "rectangle", fillsVideo ? "画面适应" : "画面填充") { setFillsVideo(!fillsVideo) }
                                     .accessibilityIdentifier("player.aspect")
+                                button(danmakuStore.enabled ? "text.bubble.fill" : "text.bubble", "弹幕设置") { danmaku() }
+                                    .accessibilityIdentifier("player.danmaku")
                                 button("gearshape", "播放设置") { openPanel(.settings) }
                                     .accessibilityIdentifier("player.settings")
                                 button(fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", fullscreen ? "退出全屏" : "全屏", action: toggleFullscreen)

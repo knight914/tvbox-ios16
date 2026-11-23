@@ -5,7 +5,15 @@ import Combine
 @MainActor
 final class VODDanmakuStore: ObservableObject {
     @Published private(set) var comments: [VODDanmaku] = []
-    @Published var enabled = false
+    private let defaults: UserDefaults
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        // New sessions are visible by default; an explicit user choice survives episodes.
+        enabled = defaults.object(forKey: "danmaku.enabled") as? Bool ?? true
+    }
+    @Published var enabled: Bool {
+        didSet { defaults.set(enabled, forKey: "danmaku.enabled") }
+    }
     @Published var offset: Double = 0
     @Published var opacity: Double = 0.8
     @Published var scrollLanes: Int = 4
@@ -37,7 +45,6 @@ final class VODDanmakuStore: ObservableObject {
     func replaceOnline(_ rows: [VODDanmaku]) {
         generation += 1
         comments = Array(rows.prefix(VODDanmakuParser.maxComments))
-        enabled = true
     }
     /// Call from fileImporter for public XML/JSON. Selection is not persisted.
     func importFile(_ url: URL) async throws {

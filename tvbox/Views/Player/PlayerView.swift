@@ -257,16 +257,6 @@ struct AVPlayerContentView: View {
             Group {
                 if let player = player {
                     PlatformVideoPlayer(player: player, fillsVideo: fillsVideo)
-                        .overlay { VODDanmakuOverlay(store: danmaku) }
-        .sheet(isPresented: $showDanmaku) {
-            NavigationStack {
-                VODDanmakuSettingsView(store: danmaku)
-                    .navigationTitle("弹幕")
-                    .toolbar { Button("关闭") { showDanmaku = false } }
-            }
-        }
-        .onChange(of: currentTime) { danmaku.updatePlaybackTime($0) }
-
         #if os(iOS)
                         .scaleEffect(videoZoomScale)
                         #endif
@@ -321,6 +311,18 @@ struct AVPlayerContentView: View {
             }
         }
         #if os(iOS)
+        .overlay {
+            VODDanmakuOverlay(store: danmaku, mediaTime: { player?.currentTime().seconds ?? currentTime })
+        }
+        .sheet(isPresented: $showDanmaku) {
+            NavigationStack {
+                VODDanmakuSettingsView(store: danmaku)
+                    .navigationTitle("弹幕")
+                    .toolbar { Button("关闭") { showDanmaku = false } }
+            }
+        }
+        .onAppear { danmaku.updatePlaybackTime(player?.currentTime().seconds ?? currentTime) }
+        .onChange(of: currentTime) { danmaku.updatePlaybackTime($0) }
         .overlay {
             ReferencePlayerControls(title: fullScreenTitle, fullscreen: isFullScreenPresentation,
                 playing: isPlaying, time: currentTime, duration: duration, rate: Double(rate), canNext: canPlayNext,

@@ -3,6 +3,7 @@ import SwiftUI
 /// Display-only overlay. Feed actual media time (not wall time) for pause/rate/seek correctness.
 struct VODDanmakuOverlay: View {
     @ObservedObject var store: VODDanmakuStore
+    var mediaTime: (() -> Double)? = nil
     @State private var scheduled: [Scheduled] = []
     private let lifetime: Double = 8
     private struct Scheduled: Identifiable {
@@ -12,9 +13,10 @@ struct VODDanmakuOverlay: View {
     }
     var body: some View {
         GeometryReader { geometry in
+            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !store.enabled)) { _ in
             Canvas { context, size in
                 guard store.enabled else { return }
-                let now = store.playbackTime - store.offset
+                let now = (mediaTime?() ?? store.playbackTime) - store.offset
                 guard now.isFinite else { return }
                 // Rows are bounded by preallocation to 12 simultaneous lanes.
                 func upper(_ target: Double) -> Int {
@@ -35,18 +37,20 @@ struct VODDanmakuOverlay: View {
                     let width = text.measure(in: CGSize(width: 10000, height: 28)).width
                     let x = item.mode == .scroll ? size.width - (size.width + width) * CGFloat(progress) : (size.width - width) / 2
                     let y: CGFloat
+                    // Fixed comments must remain visible in inline and landscape players too.
+                    // Allocate bounded bands in the actual viewport, not a 520pt portrait threshold.
+                    let step = min(CGFloat(28), max(16, (size.height - 48) / 12))
                     switch item.mode {
-                    case .scroll: y = 28 + CGFloat(row.lane) * 28
-                    case .top: y = 28 + CGFloat(6 + row.lane) * 28
-                    case .bottom: y = size.height - 70 - CGFloat(row.lane) * 28
+                    case .scroll: y = 24 + CGFloat(row.lane) * step
+                    case .top: y = 24 + CGFloat(6 + row.lane) * step
+                    case .bottom: y = size.height - 32 - CGFloat(row.lane) * step
                     }
-                    // Compact players omit lanes that would overlap or obstruct controls.
-                    guard y >= 20, y + 28 < size.height - 60 else { continue }
-                    if item.mode != .scroll && size.height < 520 { continue }
+                    guard y >= 0, y + 24 <= size.height else { continue }
                     var ink = context
                     ink.addFilter(.shadow(color: .black, radius: 1, x: 1, y: 1))
                     ink.draw(text, at: CGPoint(x: x, y: y), anchor: .topLeading)
                 }
+            }
             }
             .clipped()
             .onAppear { rebuild() }

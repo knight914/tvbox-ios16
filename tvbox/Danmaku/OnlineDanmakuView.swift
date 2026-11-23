@@ -31,6 +31,13 @@ final class OnlineDanmakuModel: ObservableObject {
             search()
         }
     }
+    /// Presentation is not a loading session boundary: reopening a sheet must not
+    /// discard the selected episode/segment cursor or cancel its in-flight request.
+    func resumePresentation(store: VODDanmakuStore) {
+        self.store = store
+        guard selected == nil, !busy, candidates.isEmpty, episodes.isEmpty else { return }
+        scheduleSearch(store: store)
+    }
     private var loaded = Set<Int>()
     private var segments: [[String: Any]] = []
     private var selected: Choice?
@@ -194,7 +201,7 @@ struct OnlineDanmakuView: View {
             }.font(.caption)
         }
         .navigationTitle("在线弹幕")
-        .onAppear { model.scheduleSearch(store: store) }
+        .onAppear { model.resumePresentation(store: store) }
         .onChange(of: model.platform) { _ in model.scheduleSearch(store: store) }
         .onChange(of: store.metadata) { _ in model.scheduleSearch(store: store) }
         .alert(item: $pending) { item in
