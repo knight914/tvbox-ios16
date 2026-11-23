@@ -26,8 +26,8 @@ struct PlaybackMetadata: Equatable {
         return matches.count == 1 ? matches[0] : nil
     }
     func matchingEpisode(_ titles: [String]) -> Int? {
-        if let exact = Self.uniqueMatch(title: episodeTitle, candidates: titles) { return exact }
         let matches = titles.indices.filter { Self.number(in: titles[$0]) == episodeNumber }
-        return matches.count == 1 ? matches[0] : nil
+        if !matches.isEmpty { return matches.count == 1 ? matches[0] : nil }
+        return Self.uniqueMatch(title: episodeTitle, candidates: titles)
     }
 }
