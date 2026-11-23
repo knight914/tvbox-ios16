@@ -29,6 +29,7 @@ final class OnlineDanmakuModel: ObservableObject {
         generation += 1
         work?.cancel(); work = nil
         bridge?.cancel(); bridge = nil
+        selected = nil; segments = []; loaded = []
         busy = false
     }
     private func start(_ operation: @escaping (DirectDanmakuBridge, Int) async throws -> Void) {
@@ -128,8 +129,12 @@ final class OnlineDanmakuModel: ObservableObject {
 
 struct OnlineDanmakuView: View {
     @ObservedObject var store: VODDanmakuStore
-    @StateObject private var model = OnlineDanmakuModel()
+    @ObservedObject private var model: OnlineDanmakuModel
     @State private var pending: OnlineDanmakuModel.Choice?
+    init(store: VODDanmakuStore) {
+        self.store = store
+        self.model = store.online
+    }
     var body: some View {
         Form {
             Section("官方直连弹幕") {
@@ -157,7 +162,5 @@ struct OnlineDanmakuView: View {
         .alert(item: $pending) { item in
             Alert(title: Text("载入本集弹幕？"), message: Text("\(item.title)\n替换已载入弹幕，不更换视频源。"), primaryButton: .default(Text("确认载入")) { model.confirm(item, store: store) }, secondaryButton: .cancel())
         }
-        .onChange(of: store.playbackTime) { time in model.advance(time, store: store) }
-        .onDisappear { model.cancel() }
     }
 }

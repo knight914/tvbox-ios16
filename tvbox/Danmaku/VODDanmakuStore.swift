@@ -11,11 +11,16 @@ final class VODDanmakuStore: ObservableObject {
     @Published var scrollLanes: Int = 4
     @Published private(set) var playbackTime: Double = 0
     private var generation = 0
+    let online = OnlineDanmakuModel()
 
     func updatePlaybackTime(_ seconds: Double) {
-        if seconds.isFinite { playbackTime = max(0, seconds) }
+        if seconds.isFinite {
+            playbackTime = max(0, seconds)
+            online.advance(playbackTime, store: self)
+        }
     }
     func clear() {
+        online.cancel()
         generation += 1
         comments = []
         playbackTime = 0
@@ -28,6 +33,7 @@ final class VODDanmakuStore: ObservableObject {
     }
     /// Call from fileImporter for public XML/JSON. Selection is not persisted.
     func importFile(_ url: URL) async throws {
+        online.cancel()
         generation += 1
         let ticket = generation
         let rows = try await Task.detached(priority: .userInitiated) {
