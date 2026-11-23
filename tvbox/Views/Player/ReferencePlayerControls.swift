@@ -26,6 +26,8 @@ struct ReferencePlayerControls: View {
             ZStack {
                 Color.clear.contentShape(Rectangle())
                     .onTapGesture { if !locked { visible.toggle(); scheduleHide() } }
+                    .accessibilityElement()
+                    .accessibilityLabel("显示或隐藏播放控制")
                     .accessibilityIdentifier("player.controlSurface")
                 if locked {
                     HStack { button("lock.fill", "解锁") { locked = false; visible = true; scheduleHide() }; Spacer() }

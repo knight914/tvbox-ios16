@@ -4,7 +4,10 @@ final class PlaybackLayoutTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--playback-layout-test"]
         app.launch()
+        XCTAssertTrue(app.buttons["enterPlayback"].waitForExistence(timeout: 15))
         app.buttons["enterPlayback"].tap()
+        expectation(for: NSPredicate { _, _ in app.windows.firstMatch.frame.width > app.windows.firstMatch.frame.height }, evaluatedWith: app)
+        waitForExpectations(timeout: 10)
         let lock = app.buttons["锁定"]
         XCTAssertTrue(lock.waitForExistence(timeout: 10))
         XCTAssertGreaterThanOrEqual(lock.frame.width, 44)
@@ -21,6 +24,7 @@ final class PlaybackLayoutTests: XCTestCase {
         app.otherElements["player.controlSurface"].tap()
         XCTAssertTrue(lock.waitForExistence(timeout: 3))
         app.buttons["退出全屏"].tap()
+        XCTAssertTrue(app.buttons["enterPlayback"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.tabBars.firstMatch.isHittable)
     }
     func testNativeLandscapeSheetAndPortraitRestoration() {
