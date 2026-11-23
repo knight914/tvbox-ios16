@@ -461,11 +461,16 @@ struct LiveView: View {
             // Only cycle real playlist alternatives, never fabricate routes.
             if channel.sourceNum > 1 {
                 HStack(spacing: 12) {
-                    Button {
-                        HapticManager.shared.mediumImpact()
-                        wakeUpCurrentChannelInfo()
-                        resetFailureTracking(for: viewModel.currentChannel)
-                        viewModel.switchSource()
+                    Menu {
+                        ForEach(0..<channel.sourceNum, id: \.self) { index in
+                            Button {
+                                wakeUpCurrentChannelInfo()
+                                resetFailureTracking(for: viewModel.currentChannel)
+                                viewModel.selectSource(at: index)
+                            } label: {
+                                Label("线路 \(index + 1)", systemImage: index == channel.sourceIndex ? "checkmark.circle.fill" : "circle")
+                            }
+                        }
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "shuffle")

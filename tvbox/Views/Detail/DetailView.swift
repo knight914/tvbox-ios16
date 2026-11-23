@@ -724,7 +724,7 @@ struct DetailView: View {
         if episodes.indices.contains(index) {
             let name = episodes[index].name.trimmingCharacters(in: .whitespacesAndNewlines)
             if !name.isEmpty {
-                return name
+                return "\(displayVideo.name) · \(name)"
             }
         }
         return displayVideo.name

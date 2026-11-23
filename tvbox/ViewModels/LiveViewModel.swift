@@ -79,6 +79,11 @@ class LiveViewModel: ObservableObject {
         currentChannel?.nextSource()
     }
     
+    func selectSource(at index: Int) {
+        guard let channel = currentChannel, channel.channelUrls.indices.contains(index) else { return }
+        currentChannel?.sourceIndex = index
+    }
+
     /// 当前频道列表
     var currentChannels: [LiveChannelItem] {
         guard selectedGroupIndex < channelGroups.count else { return [] }
