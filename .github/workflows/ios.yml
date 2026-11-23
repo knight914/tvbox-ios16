@@ -5,7 +5,7 @@ name: Build unsigned IPA (TrollStore)
 on:
   workflow_dispatch:
   push:
-    branches: [fix/fullscreen-source-build5-20261123]
+    branches: [feat/player-reference-build6-20261123]
 
 permissions:
   contents: read

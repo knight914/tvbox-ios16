@@ -304,6 +304,15 @@ struct AVPlayerContentView: View {
         }
         #if os(iOS)
         .overlay {
+            ReferencePlayerControls(title: fullScreenTitle, fullscreen: isFullScreenPresentation,
+                playing: isPlaying, time: currentTime, duration: duration, rate: Double(rate), canNext: canPlayNext,
+                togglePlayback: { togglePlayPause() }, next: { onPlayNext?() }, seek: { seek(to: $0) },
+                setRate: { setPlaybackRate(Float($0)) }, toggleFullscreen: { onToggleFullScreen?() },
+                danmaku: { showDanmaku = true })
+        }
+        #else
+        #if os(iOS)
+        .overlay {
             PlayerGestureLayer(
                 onSeek: { offset in seek(by: offset) },
                 onTogglePlayPause: { togglePlayPauseWithOSD() },
@@ -413,6 +422,7 @@ struct AVPlayerContentView: View {
                 }
             }
         }
+        #endif
         .overlay {
             SystemPlayerKeyboardCaptureView(
                 onLeft: { seek(by: -seekStep) },
@@ -425,10 +435,6 @@ struct AVPlayerContentView: View {
             .frame(width: 1, height: 1)
             .opacity(0.01)
             .allowsHitTesting(false)
-        }
-        .overlay(alignment: .topLeading) {
-            Button("弹幕") { showDanmaku = true }
-                .buttonStyle(.bordered).padding(8)
         }
         .onContinuousHover { phase in
             switch phase {

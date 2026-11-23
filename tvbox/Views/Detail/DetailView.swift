@@ -63,7 +63,8 @@ struct DetailView: View {
                         canPlayNext: canPlayNextEpisode,
                         onPlayNext: playNextEpisodeIfNeeded,
                         systemController: sharedSystemController,
-                        vlcController: sharedVLCController
+                        vlcController: sharedVLCController,
+                        fullScreenTitle: fullscreenTitle
                     )
                         .id("\(viewModel.selectedFlag)-\(viewModel.selectedEpisodeIndex)-\(url)")
                         .aspectRatio(16/9, contentMode: .fit)

@@ -910,6 +910,16 @@ struct VLCVodPlayerView: View {
 
         #if os(iOS)
         .overlay {
+            ReferencePlayerControls(title: fullScreenTitle, fullscreen: isFullScreenPresentation,
+                playing: controller.isPlaying, time: controller.currentTimeSeconds, duration: controller.durationSeconds,
+                rate: Double(controller.playbackRate), canNext: canPlayNext,
+                togglePlayback: { togglePlaybackWithOSD() }, next: { onPlayNext?() }, seek: { controller.seek(to: $0) },
+                setRate: { controller.setPlaybackRate(Float($0)) }, toggleFullscreen: { onToggleFullScreen?() },
+                danmaku: { showDanmaku = true })
+        }
+        #else
+        #if os(iOS)
+        .overlay {
             PlayerGestureLayer(
                 onSeek: { offset in controller.seek(by: offset) },
                 onTogglePlayPause: { togglePlaybackWithOSD() },
@@ -976,6 +986,7 @@ struct VLCVodPlayerView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
         }
+        #endif
         .overlay {
             KeyboardShortcutCaptureView(
                 onLeft: { wakeUpControls(); controller.seek(by: -seekStep); showOSD(icon: "gobackward.\(Int(seekStep))") },
@@ -998,10 +1009,6 @@ struct VLCVodPlayerView: View {
             .frame(width: 1, height: 1)
             .opacity(0.01)
             .allowsHitTesting(false)
-        }
-        .overlay(alignment: .topLeading) {
-            Button("弹幕") { showDanmaku = true }
-                .buttonStyle(.bordered).padding(8)
         }
         .onContinuousHover { phase in
             switch phase {

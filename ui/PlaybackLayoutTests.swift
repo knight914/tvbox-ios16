@@ -1,5 +1,28 @@
 import XCTest
 final class PlaybackLayoutTests: XCTestCase {
+    func testReferenceControlsLockAndAutoHide() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--playback-layout-test"]
+        app.launch()
+        app.buttons["enterPlayback"].tap()
+        let lock = app.buttons["锁定"]
+        XCTAssertTrue(lock.waitForExistence(timeout: 10))
+        XCTAssertGreaterThanOrEqual(lock.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(lock.frame.height, 44)
+        lock.tap()
+        XCTAssertTrue(app.buttons["解锁"].exists)
+        XCTAssertFalse(app.buttons["播放速度"].exists)
+        app.buttons["解锁"].tap()
+        XCTAssertTrue(app.buttons["播放速度"].exists)
+        let capture = XCTAttachment(screenshot: app.screenshot())
+        capture.name = "Reference controls landscape"; capture.lifetime = .keepAlways; add(capture)
+        expectation(for: NSPredicate { _, _ in !app.buttons["锁定"].exists }, evaluatedWith: app)
+        waitForExpectations(timeout: 8)
+        app.otherElements["player.controlSurface"].tap()
+        XCTAssertTrue(lock.waitForExistence(timeout: 3))
+        app.buttons["退出全屏"].tap()
+        XCTAssertTrue(app.tabBars.firstMatch.isHittable)
+    }
     func testNativeLandscapeSheetAndPortraitRestoration() {
         XCUIDevice.shared.orientation = .portrait
         let app = XCUIApplication()
