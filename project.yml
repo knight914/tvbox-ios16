@@ -78,7 +78,7 @@ targets:
     platform: iOS
     deploymentTarget: "16.4"
     sources:
-      - path: tvboxUITests
+      - path: ui
     dependencies:
       - target: tvbox
     settings:
