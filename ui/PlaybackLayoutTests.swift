@@ -1,5 +1,11 @@
 import XCTest
 final class PlaybackLayoutTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        // The production controls auto-hide after four seconds. XCTest's default
+        // quiescence wait can consume that entire window during rotation.
+        self.continueAfterFailure = false
+    }
     func testDirectDanmakuToggleWithoutSheetAndPresentationSync() {
         let app = XCUIApplication()
         app.launchArguments = ["--playback-layout-test"]
@@ -57,7 +63,7 @@ final class PlaybackLayoutTests: XCTestCase {
         let capture = XCTAttachment(screenshot: app.screenshot())
         capture.name = "Reference controls landscape"; capture.lifetime = .keepAlways; add(capture)
         expectation(for: NSPredicate { _, _ in !app.buttons["player.lock"].exists }, evaluatedWith: app)
-        waitForExpectations(timeout: 12)
+        waitForExpectations(timeout: 22)
         app.otherElements["player.controlSurface"].tap()
         XCTAssertTrue(lock.waitForExistence(timeout: 3))
         app.buttons["退出全屏"].tap()

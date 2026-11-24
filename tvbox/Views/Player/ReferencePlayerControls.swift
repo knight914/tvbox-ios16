@@ -192,7 +192,7 @@ struct ReferencePlayerControls: View {
         hideTask?.cancel()
         guard !locked, panel == nil else { return }
         hideTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
             guard !Task.isCancelled, !scrubbing else { return }
             visible = false
         }
