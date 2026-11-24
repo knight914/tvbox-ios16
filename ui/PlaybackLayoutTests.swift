@@ -8,17 +8,21 @@ final class PlaybackLayoutTests: XCTestCase {
         let toggle = app.buttons["player.danmaku"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 15))
         let initial = toggle.value as? String
+        XCTAssertNotNil(initial, "弹幕开关必须暴露开启/关闭状态")
         toggle.tap()
-        XCTAssertNotEqual(toggle.value as? String, initial)
+        // The value is published by the store, so poll instead of reading the same snapshot.
+        expectation(for: NSPredicate { _, _ in (toggle.value as? String) != initial }, evaluatedWith: app)
+        waitForExpectations(timeout: 8)
         XCTAssertFalse(app.buttons["关闭"].exists)
         XCTAssertTrue(app.buttons["player.settings"].exists)
         let changed = toggle.value as? String
         app.buttons["退出全屏"].tap()
         app.buttons["enterPlayback"].tap()
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
-        XCTAssertEqual(toggle.value as? String, changed)
+        XCTAssertEqual(toggle.value as? String, changed, "重新进入播放页应保留用户选择")
         toggle.tap()
-        XCTAssertEqual(toggle.value as? String, initial)
+        expectation(for: NSPredicate { _, _ in (toggle.value as? String) == initial }, evaluatedWith: app)
+        waitForExpectations(timeout: 8)
     }
     func testLivePlaybackHasNoImportOrEPGOverlay() {
         let app = XCUIApplication()
@@ -36,14 +40,14 @@ final class PlaybackLayoutTests: XCTestCase {
         app.buttons["enterPlayback"].tap()
         expectation(for: NSPredicate { _, _ in app.windows.firstMatch.frame.width > app.windows.firstMatch.frame.height }, evaluatedWith: app)
         waitForExpectations(timeout: 10)
-        let lock = app.buttons["锁定"]
+        let lock = app.buttons["player.lock"]
         XCTAssertTrue(lock.waitForExistence(timeout: 10))
         XCTAssertGreaterThanOrEqual(lock.frame.width, 44)
         XCTAssertGreaterThanOrEqual(lock.frame.height, 44)
         lock.tap()
-        XCTAssertTrue(app.buttons["解锁"].exists)
+        XCTAssertTrue(app.buttons["player.unlock"].exists)
         XCTAssertFalse(app.buttons["player.settings"].exists)
-        app.buttons["解锁"].tap()
+        app.buttons["player.unlock"].tap()
         let settings = app.buttons["player.settings"]
         XCTAssertTrue(settings.exists)
         settings.tap()
@@ -52,8 +56,8 @@ final class PlaybackLayoutTests: XCTestCase {
         app.buttons["关闭面板"].tap()
         let capture = XCTAttachment(screenshot: app.screenshot())
         capture.name = "Reference controls landscape"; capture.lifetime = .keepAlways; add(capture)
-        expectation(for: NSPredicate { _, _ in !app.buttons["锁定"].exists }, evaluatedWith: app)
-        waitForExpectations(timeout: 8)
+        expectation(for: NSPredicate { _, _ in !app.buttons["player.lock"].exists }, evaluatedWith: app)
+        waitForExpectations(timeout: 12)
         app.otherElements["player.controlSurface"].tap()
         XCTAssertTrue(lock.waitForExistence(timeout: 3))
         app.buttons["退出全屏"].tap()

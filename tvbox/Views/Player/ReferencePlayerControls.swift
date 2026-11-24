@@ -38,21 +38,25 @@ struct ReferencePlayerControls: View {
                     .accessibilityLabel("显示或隐藏播放控制")
                     .accessibilityIdentifier("player.controlSurface")
                 if locked {
-                    HStack { button("lock.fill", "解锁") { locked = false; visible = true; scheduleHide() }; Spacer() }
-                        .padding(.horizontal, 16)
+                    HStack {
+                        button("lock.fill", "解锁") { locked = false; visible = true; scheduleHide() }
+                            .accessibilityIdentifier("player.unlock")
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
                 } else if visible {
                     VStack(spacing: 0) {
                         HStack(spacing: 12) {
                             if fullscreen { button("chevron.left", "返回") { toggleFullscreen() } }
                             Text(title.isEmpty ? "播放中" : title).font(.headline).lineLimit(1)
                                 .accessibilityIdentifier("player.title")
-                            Spacer()
-                        }.padding(12).background(LinearGradient(colors: [.black.opacity(0.7), .clear], startPoint: .top, endPoint: .bottom))
-                        Spacer(minLength: 0)
-                        HStack {
+                            Spacer(minLength: 8)
+                            // Direct ON/OFF lives in the always-laid-out top bar so it is tappable
+                            // on iPhone widths and never swallowed by the bottom gesture area.
+                            danmakuToggle
                             button("lock.open", "锁定") { locked = true; hideTask?.cancel() }
-                            Spacer()
-                        }.padding(.horizontal, 16)
+                                .accessibilityIdentifier("player.lock")
+                        }.padding(12).background(LinearGradient(colors: [.black.opacity(0.7), .clear], startPoint: .top, endPoint: .bottom))
                         Spacer(minLength: 0)
                         VStack(spacing: 4) {
                             HStack(spacing: 8) {
@@ -73,9 +77,6 @@ struct ReferencePlayerControls: View {
                                     .accessibilityIdentifier("player.episodes")
                                 button(fillsVideo ? "rectangle.fill" : "rectangle", fillsVideo ? "画面适应" : "画面填充") { setFillsVideo(!fillsVideo) }
                                     .accessibilityIdentifier("player.aspect")
-                                button(danmakuStore.enabled ? "text.bubble.fill" : "text.bubble", danmakuStore.enabled ? "关闭弹幕" : "开启弹幕") { danmakuStore.enabled.toggle() }
-                                    .accessibilityIdentifier("player.danmaku")
-                                    .accessibilityValue(danmakuStore.enabled ? "开启" : "关闭")
                                 button("gearshape", "播放设置") { openPanel(.settings) }
                                     .accessibilityIdentifier("player.settings")
                                 button(fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", fullscreen ? "退出全屏" : "全屏", action: toggleFullscreen)
@@ -158,6 +159,26 @@ struct ReferencePlayerControls: View {
                 }
             }
         }.padding(.horizontal, 16).padding(.bottom, 12)
+    }
+
+    /// Direct ON/OFF control. Kept out of `button` so the accessibility value reflects
+    /// the live store state on every render (the generic helper only carries a label).
+    private var danmakuToggle: some View {
+        Button {
+            danmakuStore.enabled.toggle()
+            scheduleHide()
+        } label: {
+            Image(systemName: danmakuStore.enabled ? "text.bubble.fill" : "text.bubble")
+                .font(.system(size: 19, weight: .semibold))
+                .frame(minWidth: 44, minHeight: 44)
+                .background(Color.black.opacity(0.25), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("弹幕")
+        .accessibilityIdentifier("player.danmaku")
+        .accessibilityValue(danmakuStore.enabled ? "开启" : "关闭")
     }
 
     private func button(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {

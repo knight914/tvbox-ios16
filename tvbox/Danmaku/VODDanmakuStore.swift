@@ -4,7 +4,13 @@ import Combine
 /// Playback-only store: online loading uses a separate, cancelable bridge.
 @MainActor
 final class VODDanmakuStore: ObservableObject {
-    @Published private(set) var comments: [VODDanmaku] = []
+    @Published private(set) var comments: [VODDanmaku] = [] {
+        didSet { rebuildLayout() }
+    }
+    private(set) var assignedComments: [(comment: VODDanmaku, lane: Int)] = []
+    private func rebuildLayout() {
+        assignedComments = DanmakuLayout.assignLanes(comments, scrollLanes: scrollLanes)
+    }
     private let defaults: UserDefaults
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -16,7 +22,9 @@ final class VODDanmakuStore: ObservableObject {
     }
     @Published var offset: Double = 0
     @Published var opacity: Double = 0.8
-    @Published var scrollLanes: Int = 4
+    @Published var scrollLanes: Int = 4 {
+        didSet { rebuildLayout() }
+    }
     @Published private(set) var playbackTime: Double = 0
     private var generation = 0
     let online = OnlineDanmakuModel()

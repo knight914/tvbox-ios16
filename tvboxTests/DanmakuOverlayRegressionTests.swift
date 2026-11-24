@@ -69,6 +69,27 @@ final class DanmakuOverlayRegressionTests: XCTestCase {
         XCTAssertTrue(store.enabled)
     }
 
+    /// Layout must keep every mode inside the viewport at phone and landscape sizes.
+    func testLayoutPlacesEveryModeInsideViewport() throws {
+        let rows = try VODDanmakuParser.parse(Data(#"""
+        [{"time":0,"text":"scroll","mode":1},{"time":0,"text":"bottom","mode":4},{"time":0,"text":"top","mode":5}]
+        """#.utf8))
+        for size in [CGSize(width: 390, height: 220), CGSize(width: 844, height: 390)] {
+            let assigned = DanmakuLayout.assignLanes(rows, scrollLanes: 4)
+            let placed = DanmakuLayout.items(assigned, now: 3, viewport: size) { _ in 120 }
+            XCTAssertEqual(placed.count, 3, "every mode should render at \(size)")
+            for item in placed {
+                XCTAssertGreaterThanOrEqual(item.y, 0)
+                XCTAssertLessThanOrEqual(item.y + 24, size.height)
+                XCTAssertLessThanOrEqual(item.x + item.width, size.width + 0.5)
+            }
+        }
+        // Off-screen window: nothing is returned before it starts or after its lifetime.
+        let assigned = DanmakuLayout.assignLanes(rows, scrollLanes: 4)
+        XCTAssertTrue(DanmakuLayout.items(assigned, now: -1, viewport: CGSize(width: 390, height: 220)) { _ in 120 }.isEmpty)
+        XCTAssertTrue(DanmakuLayout.items(assigned, now: 20, viewport: CGSize(width: 390, height: 220)) { _ in 120 }.isEmpty)
+    }
+
     func testActualCanvasDrawsAllModesInInlineAndLandscape() async throws {
         for size in [CGSize(width: 390, height: 220), CGSize(width: 844, height: 390)] {
             for mode in [1, 4, 5] {
@@ -76,22 +97,18 @@ final class DanmakuOverlayRegressionTests: XCTestCase {
                 store.replaceOnline(try VODDanmakuParser.parse(Data("[{\"time\":0,\"text\":\"VISIBLE DANMAKU \(mode)\",\"color\":16777215,\"mode\":\(mode)}]".utf8)))
                 // Keep published time stale: rendering must sample the supplied player clock.
                 store.updatePlaybackTime(30)
-                let host = UIHostingController(rootView: VODDanmakuOverlay(store: store, mediaTime: { 3 }).background(Color.black).ignoresSafeArea())
-                let window = UIWindow(frame: CGRect(origin: .zero, size: size))
-                window.rootViewController = host
-                window.makeKeyAndVisible()
-                host.view.frame = window.bounds
-                host.view.layoutIfNeeded()
-                try await Task.sleep(nanoseconds: 250_000_000)
-                let image = UIGraphicsImageRenderer(size: size).image { _ in
-                    host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
-                }
+                // ImageRenderer rasterises the real Canvas deterministically; no display link needed.
+                let renderer = ImageRenderer(content: VODDanmakuOverlay(store: store, mediaTime: { 3 }, animated: false)
+                    .frame(width: size.width, height: size.height)
+                    .background(Color.black))
+                renderer.scale = 1
+                let image = try XCTUnwrap(renderer.uiImage, "Overlay must rasterise")
                 let capture = XCTAttachment(image: image)
                 capture.name = "Canvas-\(Int(size.width))x\(Int(size.height))-mode\(mode)"
                 capture.lifetime = .keepAlways
                 add(capture)
                 // Verify non-black ink in the actual rendered layer, not just parser state.
-                let rgba = image.cgImage!
+                let rgba = try XCTUnwrap(image.cgImage)
                 var pixels = [UInt8](repeating: 0, count: rgba.width * rgba.height * 4)
                 pixels.withUnsafeMutableBytes { buffer in
                     let bitmap = CGContext(data: buffer.baseAddress, width: rgba.width, height: rgba.height,
@@ -101,7 +118,6 @@ final class DanmakuOverlayRegressionTests: XCTestCase {
                     bitmap.draw(rgba, in: CGRect(x: 0, y: 0, width: rgba.width, height: rgba.height))
                 }
                 XCTAssertTrue(pixels.enumerated().contains { index, byte in index % 4 != 3 && byte > 64 }, "Canvas produced no visible text")
-                window.isHidden = true
             }
         }
     }

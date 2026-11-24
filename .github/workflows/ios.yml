@@ -5,7 +5,7 @@ name: Build unsigned IPA (TrollStore)
 on:
   workflow_dispatch:
   push:
-    branches: [fix/five-issues-build9-20261124]
+    branches: [fix/build9-real-ci-20261124]
 
 permissions:
   contents: read
@@ -70,7 +70,7 @@ jobs:
           xcrun xcresulttool get test-results summary --path ConfigImport.xcresult --format json > test-summary.json
           xcrun xcresulttool export attachments --path ConfigImport.xcresult --output-path canvas-evidence
           cat test-summary.json
-          python3 -c 'import json; s=json.load(open("test-summary.json")); assert s["passedTests"] >= 44 and s["failedTests"] == 0 and s["skippedTests"] == 0, s'
+          python3 -c 'import json; s=json.load(open("test-summary.json")); assert s["passedTests"] >= 48 and s["failedTests"] == 0 and s["skippedTests"] == 0, s'
 
       - name: Upload simulator evidence
         if: always()
