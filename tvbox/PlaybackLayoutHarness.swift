@@ -7,6 +7,9 @@ struct PlaybackLayoutHarness: View {
     @State private var fullscreen = false
     @State private var sheet = false
     var body: some View {
+        if ProcessInfo.processInfo.arguments.contains("--live-layout-test") {
+            LiveView()
+        } else {
         TabView {
         Button("Enter playback") { fullscreen = true }
             .accessibilityIdentifier("enterPlayback")
@@ -28,6 +31,7 @@ struct PlaybackLayoutHarness: View {
                         }
                     }
             }
+        }
     }
 }
 #endif

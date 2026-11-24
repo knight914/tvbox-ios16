@@ -109,14 +109,6 @@ struct LiveView: View {
                 }
             }
             .simultaneousGesture(TapGesture().onEnded { reportUserActivity() })
-            .overlay(alignment: .topTrailing) {
-                if showCurrentChannelInfo || viewModel.channelGroups.isEmpty {
-                HStack {
-                    Button("导入") { showImport = true }
-                    Button("节目单") { showEPG = true }
-                }.buttonStyle(.borderedProminent).padding(.trailing, 16).padding(.top, 8)
-            }
-                }
             .navigationTitle("直播")
             .sheet(isPresented: $showImport) { LiveImportView() }
             .sheet(isPresented: $showEPG) { EPGView(channel: viewModel.currentChannel) }

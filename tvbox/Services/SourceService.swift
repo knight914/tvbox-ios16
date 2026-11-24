@@ -615,7 +615,7 @@ class SourceService {
     /// 因此在外层 query 上追加参数会被直接丢弃（`?url=X&ac=list` 还会被拼成非法路径而 404）。
     /// 正确做法是把参数拼到内层 URL 上：
     /// `https://proxy.example.com/?url=https://real.host/api.php/provide/vod?ac=videolist&pg=1`
-    private func buildURL(base: String, queryItems: [URLQueryItem]) throws -> String {
+    func buildURL(base: String, queryItems: [URLQueryItem]) throws -> String {
         let trimmedBase = base.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let components = URLComponents(string: trimmedBase) else {
             throw SourceError.invalidApiUrl(base)
@@ -629,7 +629,8 @@ class SourceService {
             throw SourceError.invalidApiUrl(base)
         }
         
-        var mergedQueryItems = directComponents.queryItems ?? []
+        let replacedNames = Set(queryItems.map(\.name))
+        var mergedQueryItems = (directComponents.queryItems ?? []).filter { !replacedNames.contains($0.name) }
         mergedQueryItems.append(contentsOf: queryItems)
         directComponents.queryItems = mergedQueryItems
         
@@ -659,7 +660,8 @@ class SourceService {
         }
         
         // 参数一律拼进内层接口，由内层服务器处理。
-        var innerItems = innerComponents.queryItems ?? []
+        let replacedNames = Set(queryItems.map(\.name))
+        var innerItems = (innerComponents.queryItems ?? []).filter { !replacedNames.contains($0.name) }
         innerItems.append(contentsOf: queryItems)
         innerComponents.queryItems = innerItems
         guard let mergedInner = innerComponents.url?.absoluteString else { return nil }

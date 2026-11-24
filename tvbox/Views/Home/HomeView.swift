@@ -24,6 +24,11 @@ struct HomeView: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
 
+                NavigationLink { SourceBrowseView() } label: {
+                    Label("电影 / 电视剧 · 按源站真实分类浏览", systemImage: "square.grid.2x2")
+                        .font(.subheadline.bold()).foregroundColor(.orange)
+                        .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                }.padding(.horizontal, 20)
                 // 继续观看
                 continueWatchingSection
 

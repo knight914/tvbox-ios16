@@ -5,14 +5,30 @@ struct VODDanmakuSettingsView: View {
     @ObservedObject var store: VODDanmakuStore
     @State private var importing = false
     @State private var errorMessage: String?
+    @State private var importURL = ""
     var body: some View {
         Form {
             Toggle("显示弹幕", isOn: $store.enabled)
             Section("本地弹幕") {
-                Button("导入 XML / JSON 弹幕") { importing = true }
+                Button("导入 XML / JSON 弹幕文件") { importing = true }
+                    .disabled(store.isImporting)
+                if store.isImporting { ProgressView("正在读取并校验弹幕…") }
                 Text("已载入 \(store.comments.count) 条；不改变当前视频播放源。")
                     .font(.caption).foregroundColor(.secondary)
                 Button("清除本集弹幕") { store.clear() }
+            }
+            Section("网址导入") {
+                TextField("HTTP(S) XML / JSON 文件直链", text: $importURL)
+                    .textFieldStyle(.roundedBorder)
+                    .disableAutocorrection(true)
+                Button("从网址载入弹幕") {
+                    Task { @MainActor in
+                        do { try await store.importURL(importURL) }
+                        catch { errorMessage = error.localizedDescription }
+                    }
+                }.disabled(store.isImporting || importURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Text("只支持直接返回 XML / JSON 的地址，不支持普通视频网站页面；最多 8 MB、50000 条。载入成功会自动开启弹幕。")
+                    .font(.caption).foregroundColor(.secondary)
             }
             Section("显示设置") {
                 Slider(value: $store.opacity, in: 0.1...1) { Text("不透明度") }
@@ -27,9 +43,10 @@ struct VODDanmakuSettingsView: View {
                     .font(.caption).foregroundColor(.secondary)
             }
         }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.xml, .json]) { result in
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.data, .xml, .json, UTType(filenameExtension: "xm") ?? .data]) { result in
             Task { @MainActor in
                 do { try await store.importFile(result.get()) }
+                catch CocoaError.userCancelled { }
                 catch { errorMessage = "导入失败：仅支持 UTF-8 XML/JSON，最多 8 MB、50000 条。\(error.localizedDescription)" }
             }
         }

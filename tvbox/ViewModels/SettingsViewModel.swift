@@ -28,6 +28,44 @@ class SettingsViewModel: ObservableObject {
         let options: [ApiConfig.MultiRepoOption]
     }
     
+    struct SavedSubscription: Codable, Identifiable, Equatable {
+        var id: UUID = UUID()
+        var vodURL: String
+        var liveURL: String
+        var sourceNames: [String]
+    }
+    @Published var subscriptions: [SavedSubscription] = []
+    @Published var activeSubscriptionID: UUID?
+    private let subscriptionsKey = "tvbox.savedSubscriptions.v1"
+
+    func persistSubscriptions() {
+        if let data = try? JSONEncoder().encode(subscriptions) {
+            UserDefaults.standard.set(data, forKey: subscriptionsKey)
+        }
+    }
+    func rememberSubscription(vod: String, live: String) {
+        let names = ApiConfig.shared.sourceBeanList.map { $0.name }
+        if let index = subscriptions.firstIndex(where: { $0.vodURL == vod && $0.liveURL == live }) {
+            subscriptions[index].sourceNames = names
+            activeSubscriptionID = subscriptions[index].id
+        } else {
+            let item = SavedSubscription(vodURL: vod, liveURL: live, sourceNames: names)
+            subscriptions.append(item)
+            activeSubscriptionID = item.id
+        }
+        persistSubscriptions()
+    }
+    func activateSubscription(_ subscription: SavedSubscription) async {
+        guard !isLoadingConfig else { return }
+        vodApiUrl = subscription.vodURL
+        liveApiUrl = subscription.liveURL
+        await loadConfig()
+    }
+    func deleteSubscription(_ subscription: SavedSubscription) {
+        subscriptions.removeAll { $0.id == subscription.id }
+        if activeSubscriptionID == subscription.id { activeSubscriptionID = nil }
+        persistSubscriptions()
+    }
     /// 点播配置地址。
     @Published var vodApiUrl: String = ""
     /// 直播配置地址。
@@ -77,6 +115,15 @@ class SettingsViewModel: ObservableObject {
         } else {
             liveApiUrl = savedVod
         }
+        if let data = defaults.data(forKey: subscriptionsKey),
+           let saved = try? JSONDecoder().decode([SavedSubscription].self, from: data) {
+            subscriptions = saved
+        }
+        if !savedVod.isEmpty && !subscriptions.contains(where: { $0.vodURL == savedVod && $0.liveURL == liveApiUrl }) {
+            subscriptions.append(SavedSubscription(vodURL: savedVod, liveURL: liveApiUrl, sourceNames: []))
+            persistSubscriptions()
+        }
+        activeSubscriptionID = subscriptions.first(where: { $0.vodURL == savedVod && $0.liveURL == liveApiUrl })?.id
         loadApiHistory()
         let hasLegacyPlayer = defaults.object(forKey: HawkConfig.PLAY_TYPE) != nil
         let legacyPlayerRaw = defaults.integer(forKey: HawkConfig.PLAY_TYPE)
@@ -110,6 +157,7 @@ class SettingsViewModel: ObservableObject {
     
     /// 加载配置
     func loadConfig() async {
+        guard !isLoadingConfig else { return }
         let trimmedVod = vodApiUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedLive = liveApiUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedVod.isEmpty else {
@@ -143,6 +191,7 @@ class SettingsViewModel: ObservableObject {
             liveApiUrl = trimmedLive
             addToApiHistory(trimmedVod)
             addToApiHistory(resolvedLive)
+            rememberSubscription(vod: trimmedVod, live: trimmedLive)
             configSuccess = true
         } catch {
             configError = error.localizedDescription

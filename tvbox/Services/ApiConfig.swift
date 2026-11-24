@@ -74,7 +74,7 @@ class ApiConfig: ObservableObject {
         
         if trimmedVod == resolvedLive {
             let configResult = try await fetchConfig(from: trimmedVod)
-            guard activeLoadToken == loadToken else { return }
+            guard activeLoadToken == loadToken else { throw CancellationError() }
             await parseConfig(
                 configResult.config,
                 apiUrl: configResult.loadedFrom,
@@ -91,7 +91,7 @@ class ApiConfig: ObservableObject {
             async let vodConfigTask = fetchConfig(from: trimmedVod)
             async let liveConfigTask = fetchConfig(from: resolvedLive)
             let (vodConfig, liveConfig) = try await (vodConfigTask, liveConfigTask)
-            guard activeLoadToken == loadToken else { return }
+            guard activeLoadToken == loadToken else { throw CancellationError() }
             await parseConfig(
                 vodConfig.config,
                 apiUrl: vodConfig.loadedFrom,
@@ -105,7 +105,7 @@ class ApiConfig: ObservableObject {
                 loadToken: loadToken
             )
         }
-        guard activeLoadToken == loadToken else { return }
+        guard activeLoadToken == loadToken else { throw CancellationError() }
         
         self.isLoaded = true
     }

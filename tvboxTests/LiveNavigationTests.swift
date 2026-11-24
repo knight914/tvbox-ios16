@@ -9,6 +9,24 @@ final class LiveNavigationTests: XCTestCase {
         return item
     }
 
+    func testSubscriptionReplacementClearsOldChannelAndEPG() {
+        let config = ApiConfig.shared
+        let original = config.liveChannelGroupList
+        defer { config.liveChannelGroupList = original }
+        let vm = LiveViewModel()
+        var first = LiveChannelGroup(groupName: "First")
+        first.channels = [channel("Same", index: 0, route: "old")]
+        config.liveChannelGroupList = [first]
+        var second = LiveChannelGroup(groupName: "Second")
+        second.channels = [channel("Same", index: 0, route: "new")]
+        config.liveChannelGroupList = [second]
+        XCTAssertEqual(vm.currentChannel?.currentUrl, second.channels[0].currentUrl)
+        XCTAssertTrue(vm.epgList.isEmpty)
+        config.liveChannelGroupList = []
+        XCTAssertNil(vm.currentChannel)
+        XCTAssertEqual(vm.selectedGroupIndex, 0)
+        XCTAssertTrue(vm.epgList.isEmpty)
+    }
     func testPickerSynchronizesIndexesAndWrapsAcrossEmptyGroups() {
         let vm = LiveViewModel()
         let a = channel("A", index: 0, route: "a")

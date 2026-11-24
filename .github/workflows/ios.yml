@@ -5,7 +5,7 @@ name: Build unsigned IPA (TrollStore)
 on:
   workflow_dispatch:
   push:
-    branches: [fix/danmaku-overlay-build8-20261124]
+    branches: [fix/five-issues-build9-20261124]
 
 permissions:
   contents: read
@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     name: Build TVBox.ipa
-    runs-on: macos-15-intel
+    runs-on: macos-14
     timeout-minutes: 90
 
     steps:
@@ -70,7 +70,7 @@ jobs:
           xcrun xcresulttool get test-results summary --path ConfigImport.xcresult --format json > test-summary.json
           xcrun xcresulttool export attachments --path ConfigImport.xcresult --output-path canvas-evidence
           cat test-summary.json
-          python3 -c 'import json; s=json.load(open("test-summary.json")); assert s["passedTests"] == 39 and s["failedTests"] == 0 and s["skippedTests"] == 0, s'
+          python3 -c 'import json; s=json.load(open("test-summary.json")); assert s["passedTests"] >= 44 and s["failedTests"] == 0 and s["skippedTests"] == 0, s'
 
       - name: Upload simulator evidence
         if: always()
@@ -180,8 +180,8 @@ jobs:
           /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" "build/Payload/$APP_NAME/Info.plist" || true
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "build/Payload/$APP_NAME/Info.plist")" = xyz.appinstall.nov.carbon.lam
           test "$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "build/Payload/$APP_NAME/Info.plist")" = 16.4
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "build/Payload/$APP_NAME/Info.plist")" = 1.0.10
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "build/Payload/$APP_NAME/Info.plist")" = 8
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "build/Payload/$APP_NAME/Info.plist")" = 1.0.11
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "build/Payload/$APP_NAME/Info.plist")" = 9
           lipo -archs "build/Payload/$APP_NAME/TVBox" | grep -w arm64
           echo "=== Payload 结构 ==="
           ls -la "build/Payload/$APP_NAME"
@@ -203,10 +203,10 @@ jobs:
 
       - name: Complete corresponding source archive
         run: |
-          git archive --format=tar.gz HEAD > build/TVBox-1.0.10-build8-corresponding-source.tar.gz
+          git archive --format=tar.gz HEAD > build/TVBox-1.0.11-build9-corresponding-source.tar.gz
       - name: Upload corresponding source
         uses: actions/upload-artifact@v4
         with:
           name: TVBox-corresponding-source
-          path: build/TVBox-1.0.10-build8-corresponding-source.tar.gz
+          path: build/TVBox-1.0.11-build9-corresponding-source.tar.gz
           if-no-files-found: error

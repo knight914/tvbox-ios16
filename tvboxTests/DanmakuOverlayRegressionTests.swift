@@ -5,6 +5,35 @@ import UIKit
 
 @MainActor
 final class DanmakuOverlayRegressionTests: XCTestCase {
+    func testLocalImportAutoEnablesAndInvalidImportPreservesRows() async throws {
+        let store = isolatedStore()
+        store.enabled = false
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xm")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data("<i><d p=\"1,1,25,16777215\">fixture</d></i>".utf8).write(to: file)
+        try await store.importFile(file)
+        XCTAssertEqual(store.comments.count, 1)
+        XCTAssertTrue(store.enabled)
+        XCTAssertFalse(store.isImporting)
+        try Data("<html>webpage</html>".utf8).write(to: file)
+        do { try await store.importFile(file); XCTFail("HTML must not load") } catch { }
+        XCTAssertEqual(store.comments.count, 1)
+        XCTAssertFalse(store.isImporting)
+    }
+    func testURLImportRejectsNonHTTPWithoutChangingRows() async throws {
+        let store = isolatedStore()
+        for value in ["file:///tmp/a.xml", "not a URL", "ftp://example.invalid/file"] {
+            do { try await store.importURL(value); XCTFail("Unsupported URL accepted") } catch { }
+        }
+        XCTAssertTrue(store.comments.isEmpty)
+        XCTAssertFalse(store.isImporting)
+    }
+    func testSavedSubscriptionsRoundTripWithSameSourceName() throws {
+        let entries = [SettingsViewModel.SavedSubscription(vodURL: "https://one.invalid/config", liveURL: "", sourceNames: ["shared-key"]), SettingsViewModel.SavedSubscription(vodURL: "https://two.invalid/config", liveURL: "https://live.invalid/config", sourceNames: ["shared-key"])]
+        let decoded = try JSONDecoder().decode([SettingsViewModel.SavedSubscription].self, from: JSONEncoder().encode(entries))
+        XCTAssertEqual(decoded, entries)
+        XCTAssertNotEqual(decoded[0].id, decoded[1].id)
+    }
     private func isolatedStore() -> VODDanmakuStore {
         let defaults = UserDefaults(suiteName: "DanmakuTests.\(UUID().uuidString)")!
         return VODDanmakuStore(defaults: defaults)

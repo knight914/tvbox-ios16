@@ -108,6 +108,7 @@ class LiveViewModel: ObservableObject {
     private func applyChannelGroups(_ groups: [LiveChannelGroup]) {
         let previousChannelId = currentChannel?.id
         channelGroups = groups
+        epgList = []
         
         guard !groups.isEmpty else {
             selectedGroupIndex = 0

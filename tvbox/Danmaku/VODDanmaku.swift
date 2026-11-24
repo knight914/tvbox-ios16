@@ -9,7 +9,16 @@ struct VODDanmaku: Identifiable, Equatable {
     let mode: Mode
 }
 
-enum VODDanmakuError: Error { case tooLarge, invalidFormat, unsafeXML }
+enum VODDanmakuError: LocalizedError {
+    case tooLarge, invalidFormat, unsafeXML
+    var errorDescription: String? {
+        switch self {
+        case .tooLarge: return "弹幕文件超过 8 MB 或 50000 条限制"
+        case .invalidFormat: return "内容不是支持的 UTF-8 XML / JSON 弹幕格式（不支持 HTML 网页）"
+        case .unsafeXML: return "XML 含不支持的声明或外部实体，请使用标准弹幕 XML"
+        }
+    }
+}
 
 /// Local Bilibili XML, Dandanplay {comments:[{p,m}]} or canonical JSON array.
 /// JSON canonical row: {time:seconds,text:string,color:decimalRGB,mode:1|4|5}.

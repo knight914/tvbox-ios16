@@ -27,6 +27,9 @@ struct SettingsView: View {
     @State private var showApiInput = false
     @State private var editingApiType: ApiInputType = .vod
     @State private var showAbout = false
+    @State private var showLiveImport = false
+    @State private var showLiveEPG = false
+    @State private var deletingSubscription: SettingsViewModel.SavedSubscription?
     @State private var sourceSearchText = ""
     @State private var showingPicker: PickerType = .none
     
@@ -72,6 +75,34 @@ struct SettingsView: View {
                         }
                     }
                     
+                    SectionCard(title: "已保存订阅（单个启用，不混合源）") {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("新增接口只添加保存记录；点击启用切换完整点播/直播配置，保留原配置的 ext、直播和 EPG。不同订阅的相同源 key 不会被混合。")
+                                .font(.caption).foregroundColor(.secondary)
+                            ForEach(viewModel.subscriptions) { subscription in
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(subscription.vodURL).font(.caption).textSelection(.enabled)
+                                    Text(subscription.liveURL.isEmpty ? "直播：跟随点播" : "直播：" + subscription.liveURL).font(.caption2)
+                                    Text("该订阅源：" + (subscription.sourceNames.isEmpty ? "启用后读取" : subscription.sourceNames.joined(separator: "、")))
+                                        .font(.caption2).foregroundColor(.secondary)
+                                    HStack {
+                                        Button(viewModel.activeSubscriptionID == subscription.id ? "当前启用" : "启用此订阅") {
+                                            Task {
+                                                await viewModel.activateSubscription(subscription)
+                                                if viewModel.configSuccess { appState.applyLoadedConfigState() }
+                                            }
+                                        }.disabled(viewModel.isLoadingConfig || viewModel.activeSubscriptionID == subscription.id)
+                                        Spacer()
+                                        Button("删除", role: .destructive) { deletingSubscription = subscription }
+                                    }
+                                }
+                                Divider()
+                            }
+                            Button("添加订阅") { editingApiType = .vod; showApiInput = true }
+                            if viewModel.isLoadingConfig { ProgressView("加载订阅…") }
+                            if let error = viewModel.configError { Text(error).foregroundColor(.red).font(.caption) }
+                        }
+                    }
                     // 播放设置
                     SectionCard(title: "播放设置") {
                         SettingsRow(icon: "play.rectangle", title: "点播播放器", value: viewModel.vodPlayerEngine.title) {
@@ -123,9 +154,13 @@ struct SettingsView: View {
                         }
                     }
                     
+                    SectionCard(title: "直播管理") {
+                        SettingsRow(icon: "square.and.arrow.down", title: "导入 M3U 直播列表", value: "") { showLiveImport = true }
+                        SettingsRow(icon: "list.bullet.rectangle", title: "节目单 / EPG 管理", value: "") { showLiveEPG = true }
+                    }
                     // 关于
                     SectionCard(title: "关于") {
-                        SettingsRow(icon: "info.circle", title: "版本", value: "1.0.0", action: nil)
+                        SettingsRow(icon: "info.circle", title: "版本", value: "1.0.11 (9)", action: nil)
                         Divider().background(Color.white.opacity(0.1))
                         SettingsRow(icon: "globe", title: "站点数量", value: "\(apiConfig.sourceBeanList.count)", action: nil)
                         Divider().background(Color.white.opacity(0.1))
@@ -139,6 +174,8 @@ struct SettingsView: View {
             }
             .background(AppTheme.primaryGradient.ignoresSafeArea())
             .navigationTitle("设置")
+            .sheet(isPresented: $showLiveImport) { LiveImportView() }
+            .sheet(isPresented: $showLiveEPG) { EPGView(channel: nil) }
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
@@ -149,6 +186,13 @@ struct SettingsView: View {
             }
         }
         .overlay(pickerOverlay)
+        .alert("删除已保存订阅？", isPresented: Binding(get: { deletingSubscription != nil }, set: { if !$0 { deletingSubscription = nil } })) {
+            Button("取消", role: .cancel) { deletingSubscription = nil }
+            Button("删除", role: .destructive) {
+                if let item = deletingSubscription { viewModel.deleteSubscription(item) }
+                deletingSubscription = nil
+            }
+        } message: { Text("仅删除保存记录，不会中断当前播放，也不会清除当前已加载配置。") }
     }
     
     // MARK: - 选择器 Overlay

@@ -1,5 +1,33 @@
 import XCTest
 final class PlaybackLayoutTests: XCTestCase {
+    func testDirectDanmakuToggleWithoutSheetAndPresentationSync() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--playback-layout-test"]
+        app.launch()
+        app.buttons["enterPlayback"].tap()
+        let toggle = app.buttons["player.danmaku"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 15))
+        let initial = toggle.value as? String
+        toggle.tap()
+        XCTAssertNotEqual(toggle.value as? String, initial)
+        XCTAssertFalse(app.buttons["关闭"].exists)
+        XCTAssertTrue(app.buttons["player.settings"].exists)
+        let changed = toggle.value as? String
+        app.buttons["退出全屏"].tap()
+        app.buttons["enterPlayback"].tap()
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        XCTAssertEqual(toggle.value as? String, changed)
+        toggle.tap()
+        XCTAssertEqual(toggle.value as? String, initial)
+    }
+    func testLivePlaybackHasNoImportOrEPGOverlay() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--playback-layout-test", "--live-layout-test"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["暂无直播源"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["导入"].isHittable)
+        XCTAssertFalse(app.buttons["节目单"].isHittable)
+    }
     func testReferenceControlsLockAndAutoHide() {
         let app = XCUIApplication()
         app.launchArguments = ["--playback-layout-test"]

@@ -3,6 +3,20 @@ import XCTest
 @testable import TVBox
 
 final class ConfigImportTests: XCTestCase {
+    func testCategoryQueryOverridesOldCategoryAndPage() throws {
+        let result = try SourceService.shared.buildURL(base: "https://example.invalid/api?token=fixture&t=old&pg=9&ac=class", queryItems: [URLQueryItem(name: "t", value: "tv"), URLQueryItem(name: "pg", value: "2"), URLQueryItem(name: "ac", value: "videolist")])
+        let items = try XCTUnwrap(URLComponents(string: result)?.queryItems)
+        XCTAssertEqual(items.filter { $0.name == "t" }.map(\.value), ["tv"])
+        XCTAssertEqual(items.filter { $0.name == "pg" }.map(\.value), ["2"])
+        XCTAssertEqual(items.filter { $0.name == "token" }.map(\.value), ["fixture"])
+    }
+    func testNestedProxyCategoryReplacesOldParameters() throws {
+        let result = try SourceService.shared.buildURL(base: "https://proxy.invalid/?url=https://example.invalid/api?t=old%26pg=1", queryItems: [URLQueryItem(name: "t", value: "film"), URLQueryItem(name: "pg", value: "3")])
+        XCTAssertTrue(result.contains("t=film"))
+        XCTAssertTrue(result.contains("pg=3"))
+        XCTAssertFalse(result.contains("t=old"))
+    }
+
     func testObjectExtKeepsJSONAndRoundTripsObjectShape() throws {
         let fixture = Data(#"{"token":"fixture","nested":{"flag":true},"items":[1,"two"]}"#.utf8)
         let ext = try JSONDecoder().decode(FlexibleExt.self, from: fixture)

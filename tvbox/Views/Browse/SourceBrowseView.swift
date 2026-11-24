@@ -174,6 +174,17 @@ struct SourceBrowseView: View {
                 }
                 .padding(.horizontal, 20)
 
+                if viewModel.isLoading {
+                    ProgressView("正在加载分类内容…").tint(.orange)
+                }
+                if !viewModel.videos.isEmpty, viewModel.selectedSort?.id != "home" {
+                    Button("加载下一页 / 重试") {
+                        if let last = viewModel.videos.last { Task { await viewModel.loadMoreIfNeeded(currentItem: last) } }
+                    }.disabled(viewModel.isLoading)
+                }
+                if let message = viewModel.errorMessage, !viewModel.videos.isEmpty {
+                    Text(message).font(.caption).foregroundColor(.orange)
+                }
                 if viewModel.isLoading && !viewModel.videos.isEmpty {
                     HStack {
                         Spacer()
@@ -245,8 +256,9 @@ class SourceBrowseViewModel: ObservableObject {
     private var loadGeneration = UUID()
 
     func initializeIfNeeded() async {
-        guard sources.isEmpty else { return }
-        sources = ApiConfig.shared.sourceBeanList.filter { $0.isSupportedInSwift && $0.isHttpApi }
+        let available = ApiConfig.shared.sourceBeanList.filter { $0.isSupportedInSwift && $0.isHttpApi }
+        guard sources.map { $0.key + $0.api } != available.map { $0.key + $0.api } || selectedSource == nil || sorts.isEmpty else { return }
+        sources = available
         if let home = ApiConfig.shared.homeSourceBean,
            sources.contains(where: { $0.key == home.key }) {
             selectedSource = home
@@ -257,8 +269,10 @@ class SourceBrowseViewModel: ObservableObject {
     }
 
     func cancelLoading() {
+        guard isLoading else { return }
         loadGeneration = UUID()
         isLoading = false
+        sorts = []
         errorMessage = "已取消加载，可重试"
     }
 
@@ -275,7 +289,8 @@ class SourceBrowseViewModel: ObservableObject {
         selectedSort = sorts.first
         videos = []
         errorMessage = nil
-        Task { await loadSource() }
+        let requestedSource = source.key
+        Task { guard selectedSource?.key == requestedSource else { return }; await loadSource() }
     }
 
     func selectSort(_ sort: MovieSort.SortData) {
@@ -284,10 +299,12 @@ class SourceBrowseViewModel: ObservableObject {
         selectedSort = sort
         videos = []
         errorMessage = nil
+        currentPage = 1
+        hasMore = true
         if sort.id == "home" {
             Task { await loadSource() }
         } else {
-            Task { await loadCategory(sort, page: 1) }
+            Task { guard selectedSort?.id == sort.id else { return }; await loadCategory(sort, page: 1) }
         }
     }
 
@@ -309,13 +326,18 @@ class SourceBrowseViewModel: ObservableObject {
             let result = try await SourceService.shared.getSort(sourceBean: source)
             guard loadGeneration == gen else { return }
             var all = [MovieSort.SortData.home()]
-            all.append(contentsOf: result.sorts)
+            var seen: Set<String> = ["home"]
+            all.append(contentsOf: result.sorts.filter { !$0.id.isEmpty && !$0.name.isEmpty && seen.insert($0.id).inserted })
             sorts = all
             selectedSort = all.first
             videos = result.homeVideos
             currentPage = 1
             hasMore = false
             errorMessage = nil
+            if videos.isEmpty, let category = all.dropFirst().first {
+                selectedSort = category
+                await loadCategory(category, page: 1)
+            }
         } catch {
             guard loadGeneration == gen else { return }
             errorMessage = error.localizedDescription
@@ -336,7 +358,10 @@ class SourceBrowseViewModel: ObservableObject {
             if page == 1 {
                 videos = list
             } else {
-                videos.append(contentsOf: list)
+                let existing = Set(videos.map(\.id))
+                let additions = list.filter { !existing.contains($0.id) }
+                videos.append(contentsOf: additions)
+                if additions.isEmpty { hasMore = false; return }
             }
             currentPage = page
             hasMore = !list.isEmpty
